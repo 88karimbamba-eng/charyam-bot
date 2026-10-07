@@ -1,0 +1,4 @@
+flask==3.0.0
+httpx==0.25.2
+anthropic==0.28.1
+gunicorn==21.2.0

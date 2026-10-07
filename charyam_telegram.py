@@ -13,7 +13,7 @@ from anthropic import Anthropic
 # Config depuis variables d'environnement (SÉCURISÉ)
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
 CLAUDE_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
-CLAUDE_MODEL = CLAUDE_MODEL = os.environ.get("CLAUDE_MODEL", "claude-sonnet-5-5")
+CLAUDE_MODEL = os.environ.get("CLAUDE_MODEL", "claude-sonnet-5-5")
 USER_ID = 5608719781  # Seul utilisateur autorisé
 
 # Validation au démarrage

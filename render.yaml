@@ -12,4 +12,4 @@ services:
         scope: run
       - key: CLAUDE_MODEL
         scope: run
-        value: claude-3-5-sonnet-20241022
+        value: claude-sonnet-5-5

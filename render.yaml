@@ -1,0 +1,15 @@
+services:
+  - type: web
+    name: charyam-bot
+    runtime: python
+    pythonVersion: 3.11
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn charyam_telegram:app
+    envVars:
+      - key: ANTHROPIC_API_KEY
+        scope: run
+      - key: TELEGRAM_BOT_TOKEN
+        scope: run
+      - key: CLAUDE_MODEL
+        scope: run
+        value: claude-3-5-sonnet-20241022

@@ -12,12 +12,6 @@ import httpx
 from flask import Flask, request, jsonify
 from anthropic import Anthropic
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s %(levelname)s %(message)s",
-)
-logger = logging.getLogger("charyam")
-
 # Config depuis variables d'environnement (SÉCURISÉ)
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
 CLAUDE_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
@@ -51,6 +45,26 @@ def redact(value) -> str:
         if secret:
             text = text.replace(secret, "***")
     return text
+
+
+class RedactingFormatter(logging.Formatter):
+    """Masque les secrets dans TOUT ce qui est journalisé : nos messages,
+    ceux des bibliothèques et les traces d'erreur."""
+
+    def format(self, record):
+        return redact(super().format(record))
+
+
+_log_handler = logging.StreamHandler()
+_log_handler.setFormatter(RedactingFormatter("%(asctime)s %(levelname)s %(message)s"))
+logging.basicConfig(level=logging.INFO, handlers=[_log_handler], force=True)
+
+# httpx écrit l'URL complète de chaque appel au niveau INFO. Celle de Telegram
+# contient le jeton du bot : on coupe ces lignes (le filtre ci-dessus est une 2e protection).
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
+
+logger = logging.getLogger("charyam")
 
 
 def build_system_prompt(first_name: str = "") -> str:
@@ -112,7 +126,9 @@ def send_telegram_message(chat_id: int, text: str, reply_to_message_id: int = No
     try:
         response = httpx.post(url, json=payload, timeout=10)
         data = response.json()
-        if not data.get("ok"):
+        if data.get("ok"):
+            logger.info("Telegram: message envoyé (chat %s)", chat_id)
+        else:
             logger.error("Telegram a refusé le message: %s", redact(data))
         return data
     except Exception as e:

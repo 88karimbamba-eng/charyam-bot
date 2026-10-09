@@ -24,6 +24,13 @@ CLAUDE_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
 CLAUDE_MODEL = os.environ.get("CLAUDE_MODEL", "claude-sonnet-5-5")
 USER_ID = 5608719781  # Seul utilisateur autorisé
 
+# Prénoms connus, par identifiant Telegram (jamais partagés d'un utilisateur à l'autre).
+# Le champ "first_name" de Telegram est un nom de profil, pas toujours un prénom
+# (ex. "Mr") : on ne s'en sert donc PAS pour désigner la personne.
+KNOWN_FIRST_NAMES = {
+    USER_ID: "Karim",
+}
+
 # Validation au démarrage
 if not TELEGRAM_TOKEN:
     raise ValueError("❌ TELEGRAM_BOT_TOKEN n'est pas défini")
@@ -52,8 +59,15 @@ def build_system_prompt(first_name: str = "") -> str:
     first_name = (first_name or "").strip()
     if first_name:
         parts.append(
-            f"La personne qui t'écrit s'appelle {first_name}. "
-            "Ce prénom est le sien, pas le tien."
+            f"Le prénom de la personne qui t'écrit est {first_name}. "
+            "Ce prénom est le sien, pas le tien. "
+            "Si elle t'indique un autre prénom dans la conversation, "
+            "utilise celui qu'elle te donne."
+        )
+    else:
+        parts.append(
+            "Tu ne connais pas le prénom de la personne tant qu'elle ne te l'a pas dit : "
+            "ne le devine pas."
         )
     parts.append(
         "Si elle te dit son prénom ou te salue par son prénom, "
@@ -124,11 +138,12 @@ def get_claude_response(user_id: int, chat_id: int, user_message: str, first_nam
             messages=chat_memory[chat_id]
         )
 
-        # Journal utile pour diagnostiquer : types de blocs, arrêt, consommation
+        # Journal utile pour diagnostiquer : modèle, types de blocs, arrêt, consommation
         stop_reason = getattr(response, "stop_reason", None)
         usage = getattr(response, "usage", None)
         logger.info(
-            "Réponse Claude: stop_reason=%s blocs=%s tokens_in=%s tokens_out=%s",
+            "Réponse Claude: modele=%s stop_reason=%s blocs=%s tokens_in=%s tokens_out=%s",
+            getattr(response, "model", None),
             stop_reason,
             [getattr(block, "type", None) for block in response.content],
             getattr(usage, "input_tokens", None),
@@ -181,7 +196,6 @@ def webhook():
 
         message = update["message"]
         user_id = message["from"]["id"]
-        first_name = message["from"].get("first_name", "")
         chat_id = message["chat"]["id"]
         text = message.get("text", "")
         message_id = message.get("message_id")
@@ -195,7 +209,9 @@ def webhook():
 
         logger.info("Message reçu de %s: %s", user_id, text)
 
-        response_text = get_claude_response(user_id, chat_id, text, first_name)
+        response_text = get_claude_response(
+            user_id, chat_id, text, KNOWN_FIRST_NAMES.get(user_id, "")
+        )
 
         send_telegram_message(chat_id, response_text, reply_to_message_id=message_id)
 

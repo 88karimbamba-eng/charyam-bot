@@ -79,20 +79,20 @@ def get_claude_response(user_id: int, chat_id: int, user_message: str) -> str:
             messages=chat_memory[chat_id]
         )
 
-            # Claude peut retourner plusieurs blocs (thinking, text, etc.).
-# On extrait uniquement les blocs texte pour Telegram.
-text_blocks = [
-    block.text
-    for block in response.content
-    if getattr(block, "type", None) == "text"
-]
+        # Claude peut retourner plusieurs blocs (thinking, text, etc.).
+        # On extrait uniquement les blocs texte pour Telegram.
+        text_blocks = [
+            block.text
+            for block in response.content
+            if getattr(block, "type", None) == "text"
+        ]
 
-assistant_message = "".join(text_blocks).strip()
+        assistant_message = "".join(text_blocks).strip()
 
-if not assistant_message:
-    raise RuntimeError(
-        "Claude n'a retourné aucun bloc texte exploitable."
-    )
+        if not assistant_message:
+            raise RuntimeError(
+                "Claude n'a retourné aucun bloc texte exploitable."
+            )
 
         chat_memory[chat_id].append({
             "role": "assistant",

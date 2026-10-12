@@ -1,15 +1,14 @@
 services:
-
-- type: web
-  name: charyam-bot
-  runtime: python
-  pythonVersion: "3.11"
-  buildCommand: pip install -r requirements.txt
-  startCommand: gunicorn charyam_telegram:app --timeout 120
-  envVars:
-  - key: ANTHROPIC_API_KEY
-    sync: false
-  - key: TELEGRAM_BOT_TOKEN
-    sync: false
-  - key: CLAUDE_MODEL
-    value: claude-sonnet-5-5
+  - type: web
+    name: charyam-bot
+    runtime: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn charyam_telegram:app --workers 1 --threads 4 --timeout 120
+    healthCheckPath: /health
+    envVars:
+      - key: ANTHROPIC_API_KEY
+        sync: false
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false
+      - key: CLAUDE_MODEL
+        value: claude-sonnet-5-5

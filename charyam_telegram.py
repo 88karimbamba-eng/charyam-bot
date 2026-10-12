@@ -87,6 +87,7 @@ executor = ThreadPoolExecutor(max_workers=WORKER_THREADS, thread_name_prefix="ch
 
 # Mémoire simple par chat (en RAM : perdue à chaque redémarrage)
 chat_memory = {}
+chat_modes = {}              # activité choisie dans le menu, par chat (perdue au redémarrage)
 _chat_locks = {}
 _state_lock = threading.Lock()
 _seen_updates = OrderedDict()
@@ -187,7 +188,101 @@ elif CLAUDE_THINKING:
     logger.warning("CLAUDE_THINKING=%r non reconnu : réglage ignoré", CLAUDE_THINKING)
 
 
-def build_system_prompt(first_name: str = "") -> str:
+# ---------------------------------------------------------------- Menu et activités
+
+MODE_EMPLOI = "emploi"
+MODE_DOCUMENTS = "documents"
+
+BUTTON_EMPLOI = "💼 Emploi & Candidatures"
+BUTTON_DOCUMENTS = "📄 Documents professionnels"
+BUTTON_AIDE = "❓ Aide"
+
+BUTTON_MODES = {
+    BUTTON_EMPLOI: MODE_EMPLOI,
+    BUTTON_DOCUMENTS: MODE_DOCUMENTS,
+}
+
+# Clavier permanent : chaque bouton envoie son libellé comme un message texte ordinaire,
+# ce qui fonctionne avec allowed_updates=["message"] (pas de callback_query à gérer).
+MENU_KEYBOARD = {
+    "keyboard": [[{"text": BUTTON_EMPLOI}], [{"text": BUTTON_DOCUMENTS}], [{"text": BUTTON_AIDE}]],
+    "resize_keyboard": True,
+    "is_persistent": True,
+}
+
+MODE_PROMPTS = {
+    MODE_EMPLOI: (
+        "Activité en cours : Emploi & Candidatures. Tu aides à analyser des offres d'emploi, "
+        "adapter un CV, rédiger des lettres de motivation et des emails de candidature, "
+        "et préparer des entretiens. N'invente jamais d'expérience, de diplôme, de date, "
+        "d'employeur ou de chiffre : utilise uniquement ce que la personne fournit et demande "
+        "ce qui manque. Signale honnêtement les écarts entre son profil et les exigences du poste."
+    ),
+    MODE_DOCUMENTS: (
+        "Activité en cours : Documents professionnels. Tu rédiges des courriers, devis, factures, "
+        "comptes rendus et rapports. Pour tout montant, détaille le calcul ligne par ligne "
+        "(quantité × prix unitaire, total HT, taxe, total TTC) et vérifie-le. N'invente aucun prix, "
+        "taux de taxe, nom ou coordonnée : écris [à compléter]. Tu réponds en texte uniquement : "
+        "tu ne peux pas encore envoyer de fichier Word ou PDF, ne prétends jamais l'avoir fait."
+    ),
+}
+
+MODE_RULE = (
+    "Quand tu analyses ou conseilles, sépare clairement trois parties : « Données fournies », "
+    "« Hypothèses » et « Recommandations ». Quand tu rédiges un document, donne le document, "
+    "puis liste à part tes hypothèses et les éléments à compléter."
+)
+
+MENU_TEXT = (
+    "Choisis une activité dans le menu ci-dessous, ou écris simplement ta question.\n\n"
+    f"{BUTTON_EMPLOI} : analyse d'offre, CV, lettre, email de candidature, entretien.\n"
+    f"{BUTTON_DOCUMENTS} : courrier, devis, facture, compte rendu, rapport."
+)
+
+HELP_TEXT = (
+    "Comment m'utiliser :\n"
+    "• Choisis une activité avec les boutons, puis écris ta demande en donnant le plus "
+    "de détails possible (offre complète, ton parcours, montants…).\n"
+    "• Je ne devine pas les informations manquantes : je te les demande ou je les marque "
+    "[à compléter].\n"
+    "• Je réponds en texte. L'envoi de fichiers Word/PDF n'est pas encore disponible.\n"
+    "• Je ne retiens que la conversation en cours, et je peux l'oublier après un redémarrage.\n\n"
+    "Commandes : /menu pour afficher le menu, /aide pour ce message."
+)
+
+MODE_SELECTED_TEXT = {
+    MODE_EMPLOI: (
+        "Activité : Emploi & Candidatures.\n"
+        "Envoie-moi l'offre d'emploi (texte complet) et/ou ton parcours, puis dis-moi ce que tu veux : "
+        "analyse, CV, lettre de motivation, email ou préparation d'entretien."
+    ),
+    MODE_DOCUMENTS: (
+        "Activité : Documents professionnels.\n"
+        "Dis-moi quel document tu veux (courrier, devis, facture, compte rendu, rapport), "
+        "pour qui, et donne les informations utiles (noms, articles, quantités, prix, taux de taxe)."
+    ),
+}
+
+
+MENU_COMMANDS = ("/start", "/menu", "/aide", "/help")
+
+
+def handle_menu(chat_id: int, text: str):
+    """Traite les commandes et les boutons du menu sans appeler Claude.
+    Retourne (texte, clavier) si le message est géré ici, sinon None."""
+    command = text.strip().split()[0].split("@")[0].lower() if text.strip() else ""
+    if command in ("/start", "/menu"):
+        return MENU_TEXT, MENU_KEYBOARD
+    if command in ("/aide", "/help") or text.strip() == BUTTON_AIDE:
+        return HELP_TEXT, MENU_KEYBOARD
+    mode = BUTTON_MODES.get(text.strip())
+    if mode:
+        chat_modes[chat_id] = mode
+        return MODE_SELECTED_TEXT[mode], MENU_KEYBOARD
+    return None
+
+
+def build_system_prompt(first_name: str = "", mode: str = None) -> str:
     """Construit le message système : identité du bot, de l'utilisateur, limites de la mémoire"""
     parts = ["Tu es CHARYAM BOUTIQUE, un assistant Telegram."]
     first_name = (first_name or "").strip()
@@ -213,6 +308,9 @@ def build_system_prompt(first_name: str = "") -> str:
         "et tu peux tout oublier après un redémarrage : ne promets jamais de te souvenir "
         "à long terme."
     )
+    if mode in MODE_PROMPTS:
+        parts.append(MODE_PROMPTS[mode])
+        parts.append(MODE_RULE)
     return " ".join(parts)
 
 
@@ -285,14 +383,19 @@ def split_for_telegram(text: str, limit: int = TELEGRAM_CHUNK_SIZE) -> list:
     return chunks
 
 
-def send_telegram_message(chat_id: int, text: str, reply_to_message_id: int = None):
-    """Envoie un message Telegram (découpé si nécessaire). Retourne la dernière réponse Telegram."""
+def send_telegram_message(chat_id: int, text: str, reply_to_message_id: int = None,
+                          reply_markup: dict = None):
+    """Envoie un message Telegram (découpé si nécessaire). Retourne la dernière réponse Telegram.
+    Le clavier éventuel (reply_markup) est joint à la dernière partie."""
     data = None
-    for index, chunk in enumerate(split_for_telegram(text)):
+    chunks = split_for_telegram(text)
+    for index, chunk in enumerate(chunks):
         payload = {"chat_id": chat_id, "text": chunk}
         if reply_to_message_id and index == 0:
             payload["reply_to_message_id"] = reply_to_message_id
             payload["allow_sending_without_reply"] = True
+        if reply_markup and index == len(chunks) - 1:
+            payload["reply_markup"] = reply_markup
 
         try:
             data = tg_call("sendMessage", payload)
@@ -426,7 +529,7 @@ def get_claude_response(user_id: int, chat_id: int, user_message: str, first_nam
     messages = clean_history(
         chat_memory.get(chat_id, []) + [{"role": "user", "content": user_message}]
     )
-    system = build_system_prompt(first_name)
+    system = build_system_prompt(first_name, chat_modes.get(chat_id))
 
     try:
         response = _call_claude(messages, system, MAX_TOKENS)
@@ -494,6 +597,15 @@ def _already_seen(update_id) -> bool:
 def process_message(user_id: int, chat_id: int, text: str, message_id: int):
     """Traite un message en arrière-plan : une conversation à la fois, erreurs isolées"""
     with _get_chat_lock(chat_id):
+        menu_reply = handle_menu(chat_id, text)
+        if menu_reply:
+            reply_text, keyboard = menu_reply
+            try:
+                send_telegram_message(chat_id, reply_text, reply_markup=keyboard)
+            except Exception as e:
+                logger.error("Erreur envoi menu (%s): %s", type(e).__name__, redact(e))
+            return
+
         stop_typing = threading.Event()
         threading.Thread(
             target=_typing_loop, args=(chat_id, stop_typing), name="typing", daemon=True
@@ -541,7 +653,10 @@ def webhook():
             logger.warning("Message ignoré: utilisateur non autorisé (%s)", user_id)
             return jsonify({"ok": True})
 
-        if chat_id is None or not text or text.startswith("/"):
+        if chat_id is None or not text:
+            return jsonify({"ok": True})
+        # Commandes : seules celles du menu sont traitées ; les autres restent ignorées
+        if text.startswith("/") and text.split()[0].split("@")[0].lower() not in MENU_COMMANDS:
             return jsonify({"ok": True})
 
         if _already_seen(update.get("update_id")):

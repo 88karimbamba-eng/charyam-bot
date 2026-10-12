@@ -17,8 +17,10 @@ import os
 import hmac
 import time
 import logging
+import platform
 import threading
 import traceback
+import importlib.metadata
 from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor
 
@@ -119,6 +121,64 @@ logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("httpcore").setLevel(logging.WARNING)
 
 logger = logging.getLogger("charyam")
+
+
+def _idna_codec_works() -> bool:
+    try:
+        "charyam.example".encode("idna")
+        return True
+    except LookupError:
+        return False
+
+
+def ensure_idna_codec():
+    """Charge le codec « idna » dans le thread principal, AVANT tout autre thread.
+
+    Werkzeug (nom d'hôte de chaque requête), socket (DNS) et httpx en dépendent. Au premier
+    usage, Python importe encodings.idna ; si cet import échoue, Python AVALE l'ImportError et
+    mémorise « codec inexistant » pour tout le processus, ce qui donne ensuite, à chaque
+    requête, « LookupError: unknown encoding: idna ». On le charge donc ici, au démarrage.
+    En cas d'échec, on importe le module explicitement pour obtenir la VRAIE erreur, puis on
+    purge l'échec mémorisé. Si le codec reste inutilisable, on arrête le démarrage avec un
+    message clair : le service ne pourrait de toute façon ni servir de requêtes ni joindre Telegram."""
+    if _idna_codec_works():
+        return
+    logger.warning("Codec « idna » indisponible au premier essai : diagnostic et récupération")
+    try:
+        import encodings.idna  # noqa: F401  (lève la vraie erreur, normalement masquée)
+    except Exception as e:
+        raise RuntimeError(
+            f"Codec 'idna' inutilisable : import de encodings.idna impossible "
+            f"({type(e).__name__}: {e}). Python {platform.python_version()} semble incomplet."
+        ) from e
+    cache = getattr(encodings, "_cache", None)
+    if isinstance(cache, dict):
+        cache.pop("idna", None)  # purge de l'échec mémorisé par Python
+    if not _idna_codec_works():
+        raise RuntimeError(
+            f"Codec 'idna' toujours inutilisable après récupération (Python {platform.python_version()})."
+        )
+    logger.warning("Codec « idna » récupéré après purge de l'échec mémorisé")
+
+
+ensure_idna_codec()
+
+
+def _log_runtime_info():
+    """Journalise la version de Python et des bibliothèques réellement utilisées au démarrage"""
+    versions = []
+    for package in ("Flask", "Werkzeug", "anthropic", "gunicorn", "idna", "httpx"):
+        try:
+            versions.append(f"{package}={importlib.metadata.version(package)}")
+        except Exception:
+            versions.append(f"{package}=?")
+    logger.info(
+        "Démarrage CHARYAM : Python %s | %s | modèle=%s | max_tokens=%s",
+        platform.python_version(), " ".join(versions), CLAUDE_MODEL, MAX_TOKENS,
+    )
+
+
+_log_runtime_info()
 
 THINKING_PARAM = None
 if CLAUDE_THINKING == "between_tools":
@@ -495,6 +555,12 @@ def webhook():
     except Exception as e:
         logger.error("Erreur webhook (%s): %s", type(e).__name__, redact(e))
         return jsonify({"ok": True})
+
+
+@app.route("/", methods=["GET"])
+def index():
+    """Page d'accueil minimale : Render et les robots interrogent souvent « / »"""
+    return jsonify({"service": "charyam-bot", "status": "ok"})
 
 
 @app.route("/health", methods=["GET"])

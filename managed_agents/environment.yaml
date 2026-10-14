@@ -1,0 +1,19 @@
+# yaml-language-server: $schema=https://platform.claude.com/schemas/ant/beta/environment.json
+# Environnement de l'agent CHARYAM Emploi (test).
+#
+# Réseau « limited » : la recherche web et la lecture de pages ne marchent QUE pour les hôtes
+# listés ci-dessous (vérifié dans la doc : liste vide = aucun résultat web).
+# Syntaxe : pas de schéma ni de chemin ; « example.com » ne couvre pas « www.example.com ».
+# Liste de départ, à compléter par le propriétaire avec les sites d'emploi qu'il veut suivre.
+# Seuls emploi.ci et reliefweb.int ont été reconnus comme existants lors de la préparation ;
+# vérifie chaque ajout toi-même avant de l'inscrire.
+name: charyam-emploi-env
+config:
+  type: cloud
+  networking:
+    type: limited
+    allow_package_managers: false   # inutile pour de la recherche d'emploi : surface réduite
+    allowed_hosts:
+      - www.emploi.ci
+      - emploi.ci
+      - reliefweb.int

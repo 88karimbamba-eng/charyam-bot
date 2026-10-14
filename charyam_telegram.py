@@ -28,6 +28,8 @@ import anthropic
 import httpx
 from flask import Flask, request, jsonify
 
+import agent_backend
+
 
 def _env_int(name: str, default: int, minimum: int, maximum: int) -> int:
     """Lit un entier dans l'environnement, borné ; retourne le défaut si invalide"""
@@ -529,7 +531,21 @@ def get_claude_response(user_id: int, chat_id: int, user_message: str, first_nam
     messages = clean_history(
         chat_memory.get(chat_id, []) + [{"role": "user", "content": user_message}]
     )
-    system = build_system_prompt(first_name, chat_modes.get(chat_id))
+    mode = chat_modes.get(chat_id)
+    system = build_system_prompt(first_name, mode)
+
+    # Agent managé (bêta) : seulement si activé et pour les activités choisies.
+    # En cas d'échec, on retombe sur l'API Messages ci-dessous : le bot ne reste jamais muet.
+    if agent_backend.should_use_agent(mode):
+        try:
+            agent_text = agent_backend.ask_agent(chat_id, mode, user_message, first_name)
+            chat_memory[chat_id] = trim_history(
+                messages + [{"role": "assistant", "content": agent_text}]
+            )
+            return agent_text
+        except Exception as e:
+            logger.error("Agent managé indisponible (%s) : repli sur l'API Messages : %s",
+                         type(e).__name__, redact(e))
 
     try:
         response = _call_claude(messages, system, MAX_TOKENS)

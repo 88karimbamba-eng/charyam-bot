@@ -97,3 +97,9 @@ Je n'ai pas vérifié les tarifs ni les quotas gratuits actuels de Perplexity, F
 - **Désactiver une intégration** : supprimer sa variable dans Render (l'outil disparaît, le bot continue). Aucun redéploiement de code nécessaire au-delà du redémarrage automatique.
 - **Annuler le code** : dans Render, *Deploys* → redéployer le déploiement précédent (commit `ff676ee`), ou `git revert` du merge de la branche.
 - **Clé compromise** : la révoquer dans le tableau de bord du service puis la remplacer dans Render.
+
+## 10. Diagnostic du webhook Telegram (sans manipuler le jeton)
+
+À chaque démarrage, CHARYAM journalise une ligne `État du webhook Telegram: …` : `url_conforme` (l'URL enregistrée chez Telegram est-elle la bonne ?), `en_attente` (messages que Telegram n'a pas pu livrer), `derniere_erreur` (date et message de la dernière tentative de livraison échouée) et `mises_a_jour_autorisees`. Ni le jeton ni le secret n'y figurent.
+
+Chaque message reçu mais non traité laisse aussi une trace avec sa **raison** (« pas de message », « sans texte exploitable », « commande non gérée »…), sans jamais écrire le contenu. Pour diagnostiquer un bot muet : Render → Logs → chercher `webhook` puis `ignoré`.

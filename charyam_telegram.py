@@ -439,6 +439,36 @@ def tg_call(method: str, payload: dict = None) -> dict:
     return data if isinstance(data, dict) else {"ok": False, "description": "réponse inattendue"}
 
 
+def _log_webhook_status():
+    """Journalise l'état du webhook tel que Telegram le voit (getWebhookInfo).
+
+    Ni le jeton ni le secret n'y figurent : c'est le diagnostic qu'il fallait faire à la main
+    dans un navigateur avec le jeton. Il montre si l'URL est la bonne, combien de messages
+    attendent, et la dernière erreur de livraison rencontrée par Telegram."""
+    try:
+        info = tg_call("getWebhookInfo")
+        if not info.get("ok"):
+            logger.warning("État du webhook illisible: %s", redact(info.get("description")))
+            return
+        result = info.get("result") or {}
+        error_date = result.get("last_error_date")
+        when = (
+            time.strftime("%Y-%m-%d %H:%M:%S UTC", time.gmtime(error_date))
+            if isinstance(error_date, (int, float)) else "jamais"
+        )
+        logger.info(
+            "État du webhook Telegram: url_conforme=%s en_attente=%s derniere_erreur=%s (%s) "
+            "mises_a_jour_autorisees=%s",
+            result.get("url") == WEBHOOK_URL,
+            result.get("pending_update_count"),
+            when,
+            redact(result.get("last_error_message") or "aucune")[:200],
+            result.get("allowed_updates"),
+        )
+    except Exception as e:
+        logger.warning("État du webhook indisponible (%s): %s", type(e).__name__, redact(e))
+
+
 def _configure_webhook():
     """Configure le webhook sans appel inutile : getWebhookInfo d'abord, setWebhook seulement
     si l'URL diffère. Jusqu'à 3 tentatives (ReadTimeout isolé, démarrage à froid)."""
@@ -449,6 +479,7 @@ def _configure_webhook():
                 info = tg_call("getWebhookInfo")
                 if info.get("ok") and (info.get("result") or {}).get("url") == WEBHOOK_URL:
                     logger.info("✅ Webhook déjà configuré: %s", WEBHOOK_URL)
+                    _log_webhook_status()
                     return
 
             payload = {"url": WEBHOOK_URL, "allowed_updates": ["message"]}
@@ -458,6 +489,7 @@ def _configure_webhook():
             if result.get("ok"):
                 _secret_active = bool(WEBHOOK_SECRET)
                 logger.info("✅ Webhook configuré: %s", WEBHOOK_URL)
+                _log_webhook_status()
                 return
             logger.error("❌ Erreur webhook (tentative %s/3): %s", attempt, redact(result))
         except Exception as e:
@@ -776,10 +808,13 @@ def webhook():
     try:
         update = request.get_json(silent=True)
         if not isinstance(update, dict):
+            logger.info("Requête ignorée: corps absent ou non JSON")
             return jsonify({"ok": True})
 
         message = update.get("message")
         if not isinstance(message, dict):
+            # Seuls les NOMS de champs sont journalisés, jamais leur contenu
+            logger.info("Mise à jour ignorée: pas de message (champs: %s)", sorted(update)[:8])
             return jsonify({"ok": True})
 
         user_id = (message.get("from") or {}).get("id")
@@ -791,10 +826,12 @@ def webhook():
             logger.warning("Message ignoré: utilisateur non autorisé (%s)", user_id)
             return jsonify({"ok": True})
 
-        if chat_id is None or not text:
+        if chat_id is None or not text.strip():
+            logger.info("Message ignoré: sans texte exploitable (champs: %s)", sorted(message)[:10])
             return jsonify({"ok": True})
         # Commandes : seules celles du menu sont traitées ; les autres restent ignorées
         if text.startswith("/") and text.split()[0].split("@")[0].lower() not in MENU_COMMANDS:
+            logger.info("Message ignoré: commande non gérée")
             return jsonify({"ok": True})
 
         if _already_seen(update.get("update_id")):

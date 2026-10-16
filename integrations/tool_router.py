@@ -13,7 +13,7 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout
 
-from integrations import composio_client, firecrawl_client, perplexity_client, playwright_client
+from integrations import composio_client, firecrawl_client, perplexity_client, playwright_client, web_reader
 from integrations.common import MAX_QUERY_CHARS, ToolResult, env_int, redact_secrets
 
 logger = logging.getLogger("charyam.tools")
@@ -58,16 +58,21 @@ def _tool_defs(env=None) -> dict:
                 "required": ["requete"],
             },
         }
+    # Lecture de page : toujours disponible (lecture intégrée), Firecrawl en secours s'il est configuré.
+    defs["lire_page_web"] = {
+        "name": "lire_page_web",
+        "description": (
+            "Lit le contenu principal d'UNE page web à partir de son URL (offre d'emploi, fiche produit, "
+            "site d'un client…). Si la lecture échoue (page protégée par connexion ou chargée en JavaScript), "
+            "le dis clairement à l'utilisateur et demande-lui de coller le texte."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {"url": {"type": "string", "description": "URL http(s) complète."}},
+            "required": ["url"],
+        },
+    }
     if firecrawl_client.is_configured(env):
-        defs["lire_page_web"] = {
-            "name": "lire_page_web",
-            "description": "Lit le contenu principal d'UNE page web à partir de son URL (Firecrawl).",
-            "input_schema": {
-                "type": "object",
-                "properties": {"url": {"type": "string", "description": "URL http(s) complète."}},
-                "required": ["url"],
-            },
-        }
         defs["explorer_site_web"] = {
             "name": "explorer_site_web",
             "description": (
@@ -124,7 +129,7 @@ class ToolRouter:
     """Expose les outils configurés et les exécute de façon bornée (délai, quota, erreurs)."""
 
     TOOL_TIMEOUTS = {          # secondes, par outil (au-dessus des délais propres à chaque client)
-        "recherche_web": 40, "lire_page_web": 60, "explorer_site_web": 110,
+        "recherche_web": 40, "lire_page_web": 100, "explorer_site_web": 110,
         "naviguer_page_web": 75, "action_application": 50,
     }
 
@@ -145,7 +150,8 @@ class ToolRouter:
         """État des intégrations, sans aucun secret (affiché par /outils)"""
         return {
             "Recherche web (Perplexity)": perplexity_client.is_configured(self._env),
-            "Lecture de pages (Firecrawl)": firecrawl_client.is_configured(self._env),
+            "Lecture de pages (intégrée)": True,
+            "Lecture avancée (Firecrawl)": firecrawl_client.is_configured(self._env),
             "Navigateur (Playwright)": playwright_client.is_configured(self._env),
             "Applications (Composio, lecture seule)": composio_client.is_configured(self._env),
         }
@@ -170,7 +176,11 @@ class ToolRouter:
                 recency=args.get("fraicheur"), max_results=args.get("nombre", 5), env=env,
             )
         if name == "lire_page_web":
-            return firecrawl_client.scrape(str(args.get("url", "")), env=env)
+            url = str(args.get("url", ""))
+            result = web_reader.read(url, env=env)
+            if not result.ok and firecrawl_client.is_configured(env) and not result.text.startswith("URL refusée"):
+                return firecrawl_client.scrape(url, env=env)   # secours pour pages dynamiques
+            return result
         if name == "explorer_site_web":
             return firecrawl_client.crawl(str(args.get("url", "")), limit=args.get("pages", 3), env=env)
         if name == "naviguer_page_web":

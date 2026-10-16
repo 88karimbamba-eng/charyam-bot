@@ -64,3 +64,5 @@ urllib3==2.8.0
 websocket-client==1.9.2
 websockets==17.2
 yarl==1.25.1
+# Lecture de PDF publics (pur Python, sans dépendance)
+pypdf==6.19.0

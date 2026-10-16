@@ -79,13 +79,13 @@ def truncate(text: str, limit: int = MAX_RESULT_CHARS) -> str:
     return text[:limit].rstrip() + f"\n[… contenu tronqué à {limit} caractères]"
 
 
-def wrap_untrusted(source: str, content: str, url: str = "") -> str:
+def wrap_untrusted(source: str, content: str, url: str = "", limit: int = MAX_RESULT_CHARS) -> str:
     """Encadre un contenu venu du web : ce sont des DONNÉES, jamais des instructions.
 
     Le marqueur de fermeture est neutralisé dans le contenu pour qu'une page piégée
     ne puisse pas « sortir » de l'encadrement."""
     safe = re.sub(rf"(?i)</?\s*{UNTRUSTED_TAG}", "[balise neutralisée]", content or "")
-    safe = truncate(safe)
+    safe = truncate(safe, limit)
     attrs = f'source="{source}"'
     if url:
         attrs += f' url="{url.replace(chr(34), "%22")}"'

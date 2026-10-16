@@ -62,8 +62,9 @@ def _tool_defs(env=None) -> dict:
     defs["lire_page_web"] = {
         "name": "lire_page_web",
         "description": (
-            "Lit le contenu principal d'UNE page web à partir de son URL (offre d'emploi, fiche produit, "
-            "site d'un client…). Si la lecture échoue (page protégée par connexion ou chargée en JavaScript), "
+            "Lit le contenu principal d'UNE page web ou d'UN document PDF public à partir de son URL (offre d'emploi, "
+            "appel d'offres, termes de référence, fiche produit, site d'un client…). Si la page cite un document "
+            "lié (PDF), lis-le aussi quand la demande l'exige. Si la lecture échoue (page protégée par connexion ou chargée en JavaScript), "
             "le dis clairement à l'utilisateur et demande-lui de coller le texte."
         ),
         "input_schema": {

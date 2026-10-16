@@ -19,6 +19,7 @@ Intégrations (toutes facultatives, voir docs/INTEGRATIONS.md et .env.example) :
 
 import os
 import re
+import datetime
 import hmac
 import time
 import logging
@@ -241,6 +242,16 @@ MODE_PROMPTS = {
         "et préparer des entretiens. N'invente jamais d'expérience, de diplôme, de date, "
         "d'employeur ou de chiffre : utilise uniquement ce que la personne fournit et demande "
         "ce qui manque. Signale honnêtement les écarts entre son profil et les exigences du poste. "
+        "Quand tu analyses une offre lue depuis une page, n'attribue à l'offre que ce que la page "
+        "contient réellement ; ce qui vient de toi (conseils, questions d'entretien types) doit "
+        "être présenté comme ton conseil, jamais comme un contenu de la page. "
+        "Si l'offre demande de candidater par e-mail, donne l'adresse seulement si elle figure "
+        "dans le texte lu ou dans la ligne « Adresses e-mail présentes sur la page » ; sinon écris "
+        "« adresse non trouvée sur la page » et ne l'invente pas. "
+        "Si une date limite est indiquée ou probable, calcule le nombre de jours restants à partir "
+        "de la date du jour donnée plus bas et signale l'urgence. "
+        "Tu ne connais pas le profil de la personne tant qu'elle ne l'a pas donné : ne dis pas "
+        "qu'elle convient au poste, demande-lui son CV actuel ou ses expériences. "
         "Structure les CV et les lettres avec des titres (#) et des listes (-) : la personne pourra "
         "ensuite en obtenir une copie Word ou PDF avec les boutons du menu."
     ),
@@ -470,6 +481,8 @@ def build_system_prompt(first_name: str = "", mode: str = None) -> str:
     if mode in MODE_PROMPTS:
         parts.append(MODE_PROMPTS[mode])
         parts.append(MODE_RULE)
+        today = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d")
+        parts.append(f"Date du jour (UTC) : {today}.")
     return " ".join(parts)
 
 

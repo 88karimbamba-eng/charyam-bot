@@ -16,7 +16,7 @@ import io
 import logging
 import re
 from html.parser import HTMLParser
-from urllib.parse import urljoin
+from urllib.parse import unquote, urljoin
 
 import httpx
 
@@ -37,6 +37,17 @@ PDF_REFUSED = (
 DOC_EXTENSIONS = (".pdf", ".docx", ".doc", ".xlsx", ".xls", ".pptx", ".zip")
 TIMEOUT_SECONDS = 15
 MIN_USEFUL_CHARS = 100
+MAX_EMAILS = 5
+EMAIL_RE = re.compile(r"[a-z0-9._%+\-]+@[a-z0-9.\-]+\.[a-z]{2,}")
+
+
+def _decode_cfemail(hex_string: str) -> str:
+    """Décode un e-mail masqué par Cloudflare (data-cfemail) : XOR avec le premier octet."""
+    try:
+        data = bytes.fromhex(hex_string.strip())
+        return bytes(b ^ data[0] for b in data[1:]).decode("utf-8")
+    except (ValueError, IndexError, UnicodeDecodeError):
+        return ""
 USER_AGENT = "Mozilla/5.0 (compatible; CHARYAM-Bot/1.0; lecture ponctuelle a la demande de l'utilisateur)"
 LOGIN_HINTS = ("sign in", "log in", "login", "connectez-vous", "se connecter", "créer un compte", "join now")
 
@@ -50,6 +61,7 @@ class _TextExtractor(HTMLParser):
         super().__init__(convert_charrefs=True)
         self.base_url = base_url
         self.links = []          # (libellé, url absolue) des documents liés
+        self.emails = []         # adresses e-mail trouvées dans les liens mailto: et les e-mails masqués Cloudflare
         self._href = None
         self._label = []
         self.title = ""
@@ -58,10 +70,20 @@ class _TextExtractor(HTMLParser):
         self._skip = 0
         self._in_title = False
 
+    def _add_email(self, address: str):
+        address = (address or "").strip().lower()
+        if EMAIL_RE.fullmatch(address) and address not in self.emails:
+            self.emails.append(address)
+
     def handle_starttag(self, tag, attrs):
+        attributes = dict(attrs)
+        if attributes.get("data-cfemail"):
+            self._add_email(_decode_cfemail(attributes["data-cfemail"]))
         if tag == "a":
-            self._href = dict(attrs).get("href")
+            self._href = attributes.get("href")
             self._label = []
+            if self._href and self._href.strip().lower().startswith("mailto:"):
+                self._add_email(unquote(self._href.strip()[7:].split("?")[0]))
         if tag == "title":
             self._in_title = True
         elif tag == "meta":
@@ -215,8 +237,12 @@ def read(url: str, env=None) -> ToolResult:
                      "ou les termes de référence ne sont que dans ce document, dis à l'utilisateur de copier son "
                      "texte et de le coller dans le message ; ne devine jamais son contenu :")
         docs = "\n\n" + intro + "\n" + "\n".join(lines)
-    return ToolResult(True, wrap_untrusted("lecture_integree", header + text + docs, final_url),
-                      {"url": final_url, "title": title, "fetched_at": fetched, "documents": [u for _, u in parser.links]})
+    mails = ""
+    if parser.emails:
+        mails = ("\n\nAdresses e-mail présentes sur la page (liens mailto: ou e-mails masqués) : "
+                 + ", ".join(parser.emails[:MAX_EMAILS]))
+    return ToolResult(True, wrap_untrusted("lecture_integree", header + text + mails + docs, final_url),
+                      {"url": final_url, "title": title, "fetched_at": fetched, "documents": [u for _, u in parser.links], "emails": parser.emails[:MAX_EMAILS]})
 
 
 def _read_pdf(body: bytes, url: str) -> ToolResult:

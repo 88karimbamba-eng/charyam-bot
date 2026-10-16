@@ -90,3 +90,16 @@ class WebhookDisplayTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class EmploiPromptTests(unittest.TestCase):
+    def test_emploi_prompt_has_source_email_and_date_rules(self):
+        import charyam_telegram as bot
+        prompt = bot.build_system_prompt("", bot.MODE_EMPLOI)
+        self.assertIn("adresse non trouvée sur la page", prompt)
+        self.assertIn("Date du jour (UTC) :", prompt)
+        self.assertIn("jamais comme un contenu de la page", prompt)
+
+    def test_no_date_line_outside_activities(self):
+        import charyam_telegram as bot
+        self.assertNotIn("Date du jour", bot.build_system_prompt("", None))

@@ -22,6 +22,12 @@ import zipfile
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from xml.sax.saxutils import escape as _xml_escape
 
+# Palette sobre et lisible (ATS : la couleur ne touche que le texte des titres et un filet, jamais
+# d'image, de colonne ni de tableau de mise en page)
+COLOR_NAVY = "1F3A5F"     # nom / titres principaux
+COLOR_TEAL = "0E7C7B"     # sous-titres et filets
+COLOR_TINT = "DCEFEE"     # fond d'en-tête de tableau
+
 MAX_BLOCKS = 2000
 MAX_TEXT = 20000  # caractères par bloc
 
@@ -124,13 +130,17 @@ _DOC_RELS = (
 )
 
 
-def _style(sid: str, name: str, size: int, bold: bool, before: int = 0, after: int = 120) -> str:
+def _style(sid: str, name: str, size: int, bold: bool, before: int = 0, after: int = 120,
+           color: str = "", rule: str = "") -> str:
     b = "<w:b/>" if bold else ""
+    c = f'<w:color w:val="{color}"/>' if color else ""
+    border = (f'<w:pBdr><w:bottom w:val="single" w:sz="8" w:space="2" w:color="{rule}"/></w:pBdr>'
+              if rule else "")
     return (
         f'<w:style w:type="paragraph" w:styleId="{sid}"><w:name w:val="{name}"/>'
         '<w:basedOn w:val="Normal"/><w:qFormat/>'
-        f'<w:pPr><w:spacing w:before="{before}" w:after="{after}"/></w:pPr>'
-        f'<w:rPr>{b}<w:sz w:val="{size}"/></w:rPr></w:style>'
+        f'<w:pPr><w:keepNext/>{border}<w:spacing w:before="{before}" w:after="{after}"/></w:pPr>'
+        f'<w:rPr>{b}{c}<w:sz w:val="{size}"/></w:rPr></w:style>'
     )
 
 
@@ -141,10 +151,10 @@ _STYLES = (
     '<w:sz w:val="22"/><w:lang w:val="fr-FR"/></w:rPr></w:rPrDefault></w:docDefaults>'
     '<w:style w:type="paragraph" w:default="1" w:styleId="Normal"><w:name w:val="Normal"/><w:qFormat/>'
     '<w:pPr><w:spacing w:after="120" w:line="264" w:lineRule="auto"/></w:pPr></w:style>'
-    + _style("Title", "Title", 40, True, 0, 240)
-    + _style("Heading1", "heading 1", 32, True, 240, 120)
-    + _style("Heading2", "heading 2", 26, True, 200, 100)
-    + _style("Heading3", "heading 3", 23, True, 160, 80)
+    + _style("Title", "Title", 40, True, 0, 240, color=COLOR_NAVY)
+    + _style("Heading1", "heading 1", 36, True, 0, 60, color=COLOR_NAVY)
+    + _style("Heading2", "heading 2", 24, True, 240, 100, color=COLOR_TEAL, rule=COLOR_TEAL)
+    + _style("Heading3", "heading 3", 22, True, 160, 60, color=COLOR_NAVY)
     + "</w:styles>"
 )
 
@@ -169,14 +179,14 @@ def _para(text: str, style: str | None = None, indent: tuple[int, int] | None = 
 
 def _table(rows: list[list[str]]) -> str:
     border = "".join(
-        f'<w:{side} w:val="single" w:sz="4" w:space="0" w:color="808080"/>'
+        f'<w:{side} w:val="single" w:sz="4" w:space="0" w:color="9DB8B7"/>'
         for side in ("top", "left", "bottom", "right", "insideH", "insideV")
     )
     out = [f'<w:tbl><w:tblPr><w:tblW w:w="5000" w:type="pct"/><w:tblBorders>{border}</w:tblBorders></w:tblPr>']
     for i, row in enumerate(rows):
         out.append("<w:tr>")
         for cell in row:
-            shade = '<w:shd w:val="clear" w:color="auto" w:fill="E7E6E6"/>' if i == 0 else ""
+            shade = f'<w:shd w:val="clear" w:color="auto" w:fill="{COLOR_TINT}"/>' if i == 0 else ""
             out.append(
                 f"<w:tc><w:tcPr>{shade}</w:tcPr>"
                 f'<w:p><w:pPr><w:spacing w:after="40"/></w:pPr>{_run(cell, bold=(i == 0))}</w:p></w:tc>'
@@ -186,9 +196,11 @@ def _table(rows: list[list[str]]) -> str:
     return "".join(out)
 
 
-def docx_bytes(title: str, blocks: list[dict], author: str = "CHARYAM") -> bytes:
-    """Construit un fichier .docx valide et le renvoie en mémoire."""
-    body = [_para(title, style="Title")]
+def docx_bytes(title: str, blocks: list[dict], author: str = "CHARYAM", theme: str = "doc") -> bytes:
+    """Construit un fichier .docx valide et le renvoie en mémoire.
+
+    theme="cv" : pas de titre automatique (le nom du candidat, en titre 1, ouvre le document)."""
+    body = [] if theme == "cv" else [_para(title, style="Title")]
     for blk in blocks[:MAX_BLOCKS]:
         t = blk.get("type")
         if t in ("h1", "h2", "h3"):
@@ -237,22 +249,26 @@ def _winansi(text: str) -> str:
     return _clean(text).encode("cp1252", errors="replace").decode("cp1252")
 
 
-def pdf_bytes(title: str, blocks: list[dict], author: str = "CHARYAM") -> bytes:
+def pdf_bytes(title: str, blocks: list[dict], author: str = "CHARYAM", theme: str = "doc") -> bytes:
     from reportlab.lib import colors
     from reportlab.lib.pagesizes import A4
     from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
     from reportlab.lib.units import cm
-    from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
+    from reportlab.platypus import HRFlowable, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 
     def esc(s: str) -> str:
         return _xml_escape(_winansi(s))
 
     base = getSampleStyleSheet()
     st = {
-        "title": ParagraphStyle("t", parent=base["Title"], fontName="Helvetica-Bold", fontSize=20, spaceAfter=12),
-        "h1": ParagraphStyle("h1", parent=base["Heading1"], fontName="Helvetica-Bold", fontSize=16, spaceBefore=12),
-        "h2": ParagraphStyle("h2", parent=base["Heading2"], fontName="Helvetica-Bold", fontSize=13, spaceBefore=10),
-        "h3": ParagraphStyle("h3", parent=base["Heading3"], fontName="Helvetica-Bold", fontSize=11.5, spaceBefore=8),
+        "title": ParagraphStyle("t", parent=base["Title"], fontName="Helvetica-Bold", fontSize=20, spaceAfter=12,
+                                textColor=colors.HexColor("#" + COLOR_NAVY)),
+        "h1": ParagraphStyle("h1", parent=base["Heading1"], fontName="Helvetica-Bold", fontSize=18, spaceBefore=0,
+                             spaceAfter=4, textColor=colors.HexColor("#" + COLOR_NAVY)),
+        "h2": ParagraphStyle("h2", parent=base["Heading2"], fontName="Helvetica-Bold", fontSize=12, spaceBefore=12,
+                             spaceAfter=2, textColor=colors.HexColor("#" + COLOR_TEAL)),
+        "h3": ParagraphStyle("h3", parent=base["Heading3"], fontName="Helvetica-Bold", fontSize=11, spaceBefore=8,
+                             textColor=colors.HexColor("#" + COLOR_NAVY)),
         "p": ParagraphStyle("p", parent=base["BodyText"], fontName="Helvetica", fontSize=10.5, leading=14, spaceAfter=6),
         "li": ParagraphStyle("li", parent=base["BodyText"], fontName="Helvetica", fontSize=10.5, leading=14,
                              leftIndent=18, firstLineIndent=-10, spaceAfter=3),
@@ -262,11 +278,14 @@ def pdf_bytes(title: str, blocks: list[dict], author: str = "CHARYAM") -> bytes:
     buf = io.BytesIO()
     doc = SimpleDocTemplate(buf, pagesize=A4, leftMargin=2 * cm, rightMargin=2 * cm, topMargin=2 * cm,
                             bottomMargin=2 * cm, title=_winansi(title), author=_winansi(author))
-    story = [Paragraph(esc(title), st["title"])]
+    story = [] if theme == "cv" else [Paragraph(esc(title), st["title"])]
     for blk in blocks[:MAX_BLOCKS]:
         t = blk.get("type")
         if t in ("h1", "h2", "h3"):
             story.append(Paragraph(esc(blk["text"]), st[t]))
+            if t == "h2":
+                story.append(HRFlowable(width="100%", thickness=1, color=colors.HexColor("#" + COLOR_TEAL),
+                                        spaceBefore=1, spaceAfter=5))
         elif t == "bullet":
             story.append(Paragraph("•&nbsp;&nbsp;" + esc(blk["text"]), st["li"]))
         elif t == "num":
@@ -280,8 +299,8 @@ def pdf_bytes(title: str, blocks: list[dict], author: str = "CHARYAM") -> bytes:
             ]
             tbl = Table(data, colWidths=[(A4[0] - 4 * cm) / ncols] * ncols, repeatRows=1)
             tbl.setStyle(TableStyle([
-                ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
-                ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#E7E6E6")),
+                ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#9DB8B7")),
+                ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#" + COLOR_TINT)),
                 ("VALIGN", (0, 0), (-1, -1), "TOP"),
             ]))
             story += [tbl, Spacer(1, 8)]

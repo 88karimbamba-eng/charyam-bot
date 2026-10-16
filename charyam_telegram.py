@@ -242,7 +242,19 @@ MODE_PROMPTS = {
         "d'employeur ou de chiffre : utilise uniquement ce que la personne fournit et demande "
         "ce qui manque. Signale honnêtement les écarts entre son profil et les exigences du poste. "
         "Structure les CV et les lettres avec des titres (#) et des listes (-) : la personne pourra "
-        "ensuite en obtenir une copie Word ou PDF avec les boutons du menu."
+        "ensuite en obtenir une copie Word ou PDF avec les boutons du menu. "
+        "CV : mets le CV complet entre les balises [[CV]] et [[/CV]] (rien d'autre entre elles). Format "
+        "compatible ATS : une seule colonne, aucun tableau, aucune image ni barre de niveau ; un titre # "
+        "avec le nom, une ligne de contact en texte simple, puis des sections ## aux intitulés standards "
+        "(Profil, Compétences clés, Expérience professionnelle, Formation, Langues) ; expériences de la "
+        "plus récente à la plus ancienne (poste, employeur, dates, puces d'accomplissements chiffrés si la "
+        "personne les fournit) ; reprends les mots-clés de l'offre seulement s'ils sont vrais pour elle. "
+        "Si la personne fournit une offre ET son CV ou son parcours, termine ta réponse par la balise "
+        "[[SCORE]], puis 8 à 12 exigences clés de l'offre, une par ligne, chacune commençant par ✅ "
+        "(présente dans le CV), ⚠️ (partielle) ou ❌ (absente), puis la balise [[/SCORE]]. N'écris "
+        "aucun pourcentage : le système le calcule. N'ajoute jamais au CV une expérience, un diplôme "
+        "ou un outil absent pour améliorer le score ; pour chaque ❌, propose une action réaliste ou "
+        "dis qu'il faut accepter l'écart."
     ),
     MODE_DOCUMENTS: (
         "Activité en cours : Documents professionnels. Tu rédiges des courriers, devis, factures, "
@@ -296,6 +308,67 @@ MODE_SELECTED_TEXT = {
 
 MENU_COMMANDS = ("/start", "/menu", "/aide", "/help", "/outils")
 
+CV_RE = re.compile(r"\[\[CV\]\](.*?)\[\[/CV\]\]", re.S)
+SCORE_RE = re.compile(r"\[\[SCORE\]\](.*?)\[\[/SCORE\]\]", re.S)
+_STRAY_MARKERS = re.compile(r"\[\[/?(?:CV|SCORE)\]\]")
+MIN_SCORE_ITEMS = 3
+
+
+def extract_cv(text: str):
+    """Texte du CV entre [[CV]] et [[/CV]], ou None si Claude n'a pas posé les balises."""
+    found = CV_RE.search(text or "")
+    return found.group(1).strip() if found else None
+
+
+def match_score(block: str):
+    """Score de correspondance 0-100 calculé par le CODE (pas par Claude) à partir des lignes
+    ✅ (1 point), ⚠️ (0,5) et ❌ (0). Retourne (score, ok, partiel, absent) ou None s'il y a moins de 3 lignes."""
+    ok = partial = missing = 0
+    for line in (block or "").splitlines():
+        head = line.strip()
+        if head.startswith("✅"):
+            ok += 1
+        elif head.startswith("⚠"):
+            partial += 1
+        elif head.startswith("❌"):
+            missing += 1
+    total = ok + partial + missing
+    if total < MIN_SCORE_ITEMS:
+        return None
+    return round(100 * (ok + 0.5 * partial) / total), ok, partial, missing
+
+
+def score_line(score: int) -> str:
+    color = "🟢" if score >= 75 else "🟡" if score >= 50 else "🔴"
+    filled = round(score / 10)
+    return (f"{color} Score de correspondance avec l'offre : {score}/100  {'█' * filled}{'░' * (10 - filled)}\n"
+            "(estimation d'après l'offre fournie, pas un score officiel d'un logiciel ATS)")
+
+
+def _render_score(match) -> str:
+    block = match.group(1).strip()
+    result = match_score(block)
+    lines = ["", "CORRESPONDANCE AVEC L'OFFRE", block]
+    if result:
+        score, ok, partial, missing = result
+        lines += ["", score_line(score), f"✅ {ok}   ⚠️ {partial}   ❌ {missing}"]
+    return "\n".join(lines)
+
+
+def prepare_for_display(text: str) -> str:
+    """Balises internes : le score est calculé et affiché, les balises du CV sont retirées."""
+    text = SCORE_RE.sub(_render_score, text or "")
+    return _STRAY_MARKERS.sub("", text)
+
+
+def prepare_for_export(text: str) -> str:
+    """Pour Word/PDF : seulement le CV s'il est balisé, jamais le bloc de score."""
+    cv = extract_cv(text)
+    if cv is not None:
+        return cv
+    return _STRAY_MARKERS.sub("", SCORE_RE.sub("", text or "")).strip()
+
+
 UNKNOWN_COMMAND_TEXT = "Commande inconnue. Touche /menu pour voir les choix, ou écris simplement ta demande."
 
 
@@ -306,7 +379,7 @@ def telegram_display(text: str) -> str:
     qui s'en servent pour les titres, listes et tableaux."""
     out = []
     in_code = False
-    for line in (text or "").splitlines():
+    for line in prepare_for_display(text).splitlines():
         stripped = line.strip()
         if stripped.startswith("```"):
             in_code = not in_code
@@ -398,11 +471,15 @@ def build_export(chat_id: int, fmt: str):
     if not text:
         raise ValueError(NO_ANSWER_TEXT)
     title = EXPORT_TITLES.get(chat_modes.get(chat_id), "Document CHARYAM")
-    blocks = charyam_docs.markdown_to_blocks(text)
+    is_cv = extract_cv(text) is not None
+    blocks = charyam_docs.markdown_to_blocks(prepare_for_export(text))
+    if is_cv:
+        title = "CV"
+    theme = "cv" if is_cv else "doc"
     if fmt == "pdf":
-        data = charyam_docs.pdf_bytes(title, blocks)
+        data = charyam_docs.pdf_bytes(title, blocks, theme=theme)
     else:
-        data = charyam_docs.docx_bytes(title, blocks)
+        data = charyam_docs.docx_bytes(title, blocks, theme=theme)
     filename = charyam_docs.safe_filename(f"{title}_{time.strftime('%Y-%m-%d')}", fmt)
     return filename, data
 

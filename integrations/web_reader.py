@@ -20,7 +20,7 @@ from urllib.parse import urljoin
 
 import httpx
 
-from integrations.common import ToolResult, UnsafeURL, check_public_url, redact_secrets, wrap_untrusted
+from integrations.common import ToolResult, UnsafeURL, check_public_url, env_value, redact_secrets, wrap_untrusted
 
 logger = logging.getLogger("charyam.webreader")
 
@@ -30,6 +30,10 @@ MAX_PDF_BYTES = 12_000_000        # un PDF de termes de référence fait souvent
 MAX_PDF_PAGES = 40
 PDF_RESULT_CHARS = 30000          # un PDF est tronqué plus tard qu'une page (coût en jetons assumé)
 MAX_LINKED_DOCS = 8
+PDF_REFUSED = (
+    "Je ne lis pas les PDF. Dis à l'utilisateur de copier le texte du document "
+    "(par exemple l'offre ou les termes de référence) et de le coller directement dans le message."
+)
 DOC_EXTENSIONS = (".pdf", ".docx", ".doc", ".xlsx", ".xls", ".pptx", ".zip")
 TIMEOUT_SECONDS = 15
 MIN_USEFUL_CHARS = 100
@@ -107,6 +111,14 @@ class _TextExtractor(HTMLParser):
         return "\n".join(out).strip()
 
 
+class PdfNotRead(Exception):
+    """Le contenu est un PDF et la lecture des PDF n'est pas activée (par défaut : désactivée, pour limiter les coûts)."""
+
+
+def pdf_enabled(env=None) -> bool:
+    return env_value("PDF_READING", env) == "1"
+
+
 def _new_client() -> httpx.Client:
     return httpx.Client(
         timeout=httpx.Timeout(TIMEOUT_SECONDS, connect=8),
@@ -116,7 +128,7 @@ def _new_client() -> httpx.Client:
     )
 
 
-def _fetch(client, url: str):
+def _fetch(client, url: str, pdf_allowed: bool = False):
     """Suit les redirections à la main en revalidant chaque adresse. Retourne (réponse, octets, url_finale)."""
     for _ in range(MAX_REDIRECTS + 1):
         url = check_public_url(url)
@@ -128,6 +140,8 @@ def _fetch(client, url: str):
             is_pdf = kind == "application/pdf" or (kind in ("", "application/octet-stream") and url.lower().split("?")[0].endswith(".pdf"))
             if not is_pdf and kind and not (kind.startswith("text/") or kind in ("application/xhtml+xml", "application/xml")):
                 raise ValueError(f"type de contenu non pris en charge ({kind})")
+            if is_pdf and not pdf_allowed:
+                raise PdfNotRead()              # on ne télécharge même pas le fichier
             limit = MAX_PDF_BYTES if is_pdf else MAX_BYTES
             body = bytearray()
             for chunk in response.iter_bytes():
@@ -148,9 +162,11 @@ def read(url: str, env=None) -> ToolResult:
         return ToolResult.error(f"URL refusée : {exc}.")
     try:
         with _new_client() as client:
-            response, body, final_url, is_pdf = _fetch(client, url)
+            response, body, final_url, is_pdf = _fetch(client, url, pdf_enabled(env))
     except UnsafeURL as exc:
         return ToolResult.error(f"URL refusée : {exc}.")
+    except PdfNotRead:
+        return ToolResult.error(PDF_REFUSED, url=url, pdf=True)
     except httpx.TimeoutException:
         return ToolResult.error("La page n'a pas répondu à temps.", url=url)
     except ValueError as exc:
@@ -165,7 +181,7 @@ def read(url: str, env=None) -> ToolResult:
         return ToolResult.error(f"La page n'a pas pu être lue ({reason}).", url=final_url)
 
     if is_pdf:
-        return _read_pdf(body, final_url)
+        return _read_pdf(body, final_url)   # seulement si PDF_READING=1
 
     text_html = body.decode(response.encoding or "utf-8", errors="replace")
     parser = _TextExtractor(final_url)
@@ -192,8 +208,13 @@ def read(url: str, env=None) -> ToolResult:
     docs = ""
     if parser.links:
         lines = [f"- {label or '(sans libellé)'} : {link}" for label, link in parser.links[:MAX_LINKED_DOCS]]
-        docs = ("\n\nDocuments liés sur cette page (lisibles avec lire_page_web si ce sont des PDF) :\n"
-                + "\n".join(lines))
+        if pdf_enabled(env):
+            intro = "Documents liés sur cette page (les PDF sont lisibles avec lire_page_web) :"
+        else:
+            intro = ("Documents liés sur cette page (PDF et autres fichiers NON lus par ce bot). Si l'offre complète "
+                     "ou les termes de référence ne sont que dans ce document, dis à l'utilisateur de copier son "
+                     "texte et de le coller dans le message ; ne devine jamais son contenu :")
+        docs = "\n\n" + intro + "\n" + "\n".join(lines)
     return ToolResult(True, wrap_untrusted("lecture_integree", header + text + docs, final_url),
                       {"url": final_url, "title": title, "fetched_at": fetched, "documents": [u for _, u in parser.links]})
 

@@ -113,9 +113,11 @@ Chaque message reçu mais non traité laisse aussi une trace avec sa **raison** 
 - **Garde-fous** : chaque adresse et chaque redirection passent par `check_public_url` (5 redirections max), 1,5 Mo lus au maximum, texte/HTML uniquement, contenu encadré comme donnée non fiable. `robots.txt` n'est pas consulté (lecture ponctuelle demandée par l'utilisateur). Limite connue : DNS rebinding non couvert à 100 %.
 - **Effet de bord à connaître** : comme un outil est maintenant toujours exposé, chaque message envoie à Claude la définition de l'outil et les règles d'usage (quelques centaines de jetons de plus par message). `/outils` affiche « Lecture de pages (intégrée) : activé ».
 
-### 11 bis. Lecture de PDF et documents liés
+### 11 bis. PDF et documents liés : NON lus par défaut
 
-- `lire_page_web` lit aussi les **PDF publics** (`pypdf==6.19.0`, pur Python) : 12 Mo maximum, 40 pages maximum, texte tronqué à 30 000 caractères. Un PDF **scanné** (images sans texte) ou protégé par mot de passe est refusé avec un message clair.
+**Règle de fonctionnement (décision de Karim, 16/10/2026)** : le bot ne lit pas les PDF, pour limiter les coûts. Si le lien est un PDF, ou si l'offre complète n'est que dans un PDF lié, il le dit et demande de copier-coller le texte. Une page qui contient l'offre directement est lue normalement. Le fichier n'est même pas téléchargé, et Firecrawl n'est pas utilisé en secours pour un PDF. Pour réactiver la lecture : variable `PDF_READING=1` sur Render (à ne faire qu'en connaissance du coût ci-dessous).
+
+Capacité conservée, désactivée par défaut : `lire_page_web` peut lire les **PDF publics** (`pypdf==6.19.0`, pur Python) : 12 Mo maximum, 40 pages maximum, texte tronqué à 30 000 caractères. Un PDF **scanné** (images sans texte) ou protégé par mot de passe est refusé avec un message clair.
 - Quand une page contient des liens vers des documents (`.pdf`, `.docx`, `.xlsx`…), ils sont listés à la fin du texte pour que Claude puisse ouvrir le PDF. Seuls les PDF sont lisibles ; les autres formats sont seulement signalés.
 - Mesuré sur un vrai PDF de 8,9 Mo / 18 pages : 2,7 s, environ +31 Mo de mémoire (Render gratuit : 512 Mo).
 - **Coût** : un PDF de 30 000 caractères représente de l'ordre de 8 000 à 10 000 jetons d'entrée (estimation, pas une mesure) pour ce message et les suivants de la même conversation, tant qu'ils restent dans l'historique.

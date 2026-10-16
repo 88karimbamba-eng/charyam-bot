@@ -47,11 +47,13 @@ class DefinitionsTest(unittest.TestCase):
     def names(self, env):
         return sorted(d["name"] for d in ToolRouter(env=env).definitions())
 
-    def test_rien_n_est_expose_sans_configuration(self):
+    def test_sans_cle_seule_la_lecture_integree_est_exposee(self):
         router = ToolRouter(env={})
-        self.assertFalse(router.enabled())
-        self.assertEqual(router.definitions(), [])
-        self.assertFalse(any(router.status().values()))
+        self.assertEqual(self.names({}), ["lire_page_web"])
+        self.assertTrue(router.enabled())
+        status = router.status()
+        self.assertTrue(status["Lecture de pages (intégrée)"])
+        self.assertEqual([k for k, v in status.items() if v], ["Lecture de pages (intégrée)"])
 
     def test_tous_les_outils_quand_tout_est_configure(self):
         self.assertEqual(self.names(ALL_ENV), sorted([
@@ -59,17 +61,17 @@ class DefinitionsTest(unittest.TestCase):
         ]))
 
     def test_chaque_outil_depend_de_sa_propre_configuration(self):
-        self.assertEqual(self.names({"PERPLEXITY_API_KEY": "pplx-x" * 3}), ["recherche_web"])
+        self.assertEqual(self.names({"PERPLEXITY_API_KEY": "pplx-x" * 3}), ["lire_page_web", "recherche_web"])
         self.assertEqual(self.names({"FIRECRAWL_API_KEY": "fc-xxxxxx"}), ["explorer_site_web", "lire_page_web"])
 
     def test_navigateur_exige_une_liste_blanche(self):
-        self.assertEqual(self.names({"PLAYWRIGHT_CDP_URL": "wss://b.example"}), [])
-        self.assertEqual(self.names({"PLAYWRIGHT_LOCAL": "1"}), [])
-        self.assertEqual(self.names({"PLAYWRIGHT_LOCAL": "1", "PLAYWRIGHT_ALLOWED_DOMAINS": "exemple.org"}), ["naviguer_page_web"])
+        self.assertEqual(self.names({"PLAYWRIGHT_CDP_URL": "wss://b.example"}), ["lire_page_web"])
+        self.assertEqual(self.names({"PLAYWRIGHT_LOCAL": "1"}), ["lire_page_web"])
+        self.assertEqual(self.names({"PLAYWRIGHT_LOCAL": "1", "PLAYWRIGHT_ALLOWED_DOMAINS": "exemple.org"}), ["lire_page_web", "naviguer_page_web"])
 
     def test_composio_exige_la_liste_blanche_et_l_utilisateur(self):
-        self.assertEqual(self.names({"COMPOSIO_API_KEY": "cmp-xxxxxx", "COMPOSIO_USER_ID": "u"}), [])
-        self.assertEqual(self.names({"COMPOSIO_API_KEY": "cmp-xxxxxx", "COMPOSIO_READONLY_TOOLS": "A"}), [])
+        self.assertEqual(self.names({"COMPOSIO_API_KEY": "cmp-xxxxxx", "COMPOSIO_USER_ID": "u"}), ["lire_page_web"])
+        self.assertEqual(self.names({"COMPOSIO_API_KEY": "cmp-xxxxxx", "COMPOSIO_READONLY_TOOLS": "A"}), ["lire_page_web"])
 
     def test_le_statut_ne_contient_aucun_secret(self):
         self.assertNotIn("TESTKEY", repr(ToolRouter(env=ALL_ENV).status()))
@@ -83,6 +85,7 @@ class RoutingTest(unittest.TestCase):
         self.router = ToolRouter(env=ALL_ENV)
         self.targets = {
             "perplexity": mock.patch.object(tool_router.perplexity_client, "search", return_value=ToolResult(True, "P")),
+            "reader": mock.patch.object(tool_router.web_reader, "read", return_value=ToolResult(True, "R")),
             "scrape": mock.patch.object(tool_router.firecrawl_client, "scrape", return_value=ToolResult(True, "S")),
             "crawl": mock.patch.object(tool_router.firecrawl_client, "crawl", return_value=ToolResult(True, "C")),
             "playwright": mock.patch.object(tool_router.playwright_client, "read_page", return_value=ToolResult(True, "B")),
@@ -98,9 +101,25 @@ class RoutingTest(unittest.TestCase):
         self.assertEqual(self.router.execute("recherche_web", {"requete": "cacao", "fraicheur": "day"}).text, "P")
         self.assertEqual(self.called(), ["perplexity"])
 
-    def test_page_vers_firecrawl(self):
-        self.router.execute("lire_page_web", {"url": "https://exemple.org"})
-        self.assertEqual(self.called(), ["scrape"])
+    def test_page_lue_par_la_lecture_integree_sans_firecrawl(self):
+        self.assertEqual(self.router.execute("lire_page_web", {"url": "https://exemple.org"}).text, "R")
+        self.assertEqual(self.called(), ["reader"])
+
+    def test_page_dynamique_secours_firecrawl(self):
+        self.mocks["reader"].return_value = ToolResult.error("Contenu insuffisant : JavaScript.")
+        self.assertEqual(self.router.execute("lire_page_web", {"url": "https://exemple.org"}).text, "S")
+        self.assertEqual(self.called(), ["reader", "scrape"])
+
+    def test_url_refusee_ne_passe_pas_au_secours(self):
+        self.mocks["reader"].return_value = ToolResult.error("URL refusée : adresse IP non publique.")
+        self.assertFalse(self.router.execute("lire_page_web", {"url": "http://10.0.0.1"}).ok)
+        self.assertEqual(self.called(), ["reader"])
+
+    def test_sans_firecrawl_l_echec_de_lecture_est_renvoye_tel_quel(self):
+        self.mocks["reader"].return_value = ToolResult.error("Contenu insuffisant : JavaScript.")
+        result = ToolRouter(env={}).execute("lire_page_web", {"url": "https://exemple.org"})
+        self.assertFalse(result.ok)
+        self.assertEqual(self.called(), ["reader"])
 
     def test_site_vers_crawl(self):
         self.router.execute("explorer_site_web", {"url": "https://exemple.org", "pages": 2})
@@ -116,7 +135,7 @@ class RoutingTest(unittest.TestCase):
 
     def test_outil_inconnu_ou_non_configure_n_appelle_rien(self):
         limited = ToolRouter(env={"PERPLEXITY_API_KEY": "pplx-xxxxxxx"})
-        for name in ("lire_page_web", "naviguer_page_web", "action_application", "inconnu"):
+        for name in ("naviguer_page_web", "action_application", "inconnu"):
             self.assertFalse(limited.execute(name, {}).ok)
         self.assertEqual(self.called(), [])
 
@@ -154,7 +173,10 @@ class LoopTest(unittest.TestCase):
 
     def test_sans_outil_configure_un_seul_appel_inchange(self):
         create = Scripted(reply(text("réponse")))
-        response = complete_with_tools(create, self.base_kwargs(), ToolRouter(env={}))
+        class NoTools(ToolRouter):
+            def enabled(self):
+                return False
+        response = complete_with_tools(create, self.base_kwargs(), NoTools(env={}))
         self.assertEqual(len(create.calls), 1)
         self.assertNotIn("tools", create.calls[0])
         self.assertEqual(create.calls[0]["system"], "SYS")

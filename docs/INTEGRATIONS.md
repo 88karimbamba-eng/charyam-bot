@@ -103,3 +103,12 @@ Je n'ai pas vérifié les tarifs ni les quotas gratuits actuels de Perplexity, F
 À chaque démarrage, CHARYAM journalise une ligne `État du webhook Telegram: …` : `url_conforme` (l'URL enregistrée chez Telegram est-elle la bonne ?), `en_attente` (messages que Telegram n'a pas pu livrer), `derniere_erreur` (date et message de la dernière tentative de livraison échouée) et `mises_a_jour_autorisees`. Ni le jeton ni le secret n'y figurent.
 
 Chaque message reçu mais non traité laisse aussi une trace avec sa **raison** (« pas de message », « sans texte exploitable », « commande non gérée »…), sans jamais écrire le contenu. Pour diagnostiquer un bot muet : Render → Logs → chercher `webhook` puis `ignoré`.
+
+## 11. Lecture intégrée de liens (sans clé)
+
+`lire_page_web` est désormais **toujours disponible** : `integrations/web_reader.py` lit une page publique avec une simple requête HTTP (bibliothèque standard + httpx, aucune dépendance ajoutée). Si elle échoue et que `FIRECRAWL_API_KEY` est configurée, Firecrawl prend le relais (sauf si l'URL a été refusée par le garde-fou).
+
+- **Marche** : articles, offres d'emploi, fiches produit, sites vitrines classiques (vérifié sur de vraies pages : github.com, example.com).
+- **Ne marche pas** : pages qui exigent une connexion (LinkedIn, Facebook, Instagram, TikTok…) ou chargées par JavaScript. Le bot le dit et demande de coller le texte ; il n'invente rien. Firecrawl ou Playwright peuvent aider pour le JavaScript, pas pour les connexions.
+- **Garde-fous** : chaque adresse et chaque redirection passent par `check_public_url` (5 redirections max), 1,5 Mo lus au maximum, texte/HTML uniquement, contenu encadré comme donnée non fiable. `robots.txt` n'est pas consulté (lecture ponctuelle demandée par l'utilisateur). Limite connue : DNS rebinding non couvert à 100 %.
+- **Effet de bord à connaître** : comme un outil est maintenant toujours exposé, chaque message envoie à Claude la définition de l'outil et les règles d'usage (quelques centaines de jetons de plus par message). `/outils` affiche « Lecture de pages (intégrée) : activé ».

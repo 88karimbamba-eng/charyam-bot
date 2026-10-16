@@ -21,6 +21,11 @@ bot = base.bot
 SOURCE_URL = "https://source.example/cacao-2026"
 
 
+def tool_router_error():
+    from integrations.common import ToolResult
+    return ToolResult.error("Contenu insuffisant : JavaScript.")
+
+
 def pplx_handler(request):
     return httpx.Response(200, json={"results": [
         {"title": "Cours du cacao", "url": SOURCE_URL, "snippet": "Le cacao s'échange à X.", "date": "2026-10-15"},
@@ -90,7 +95,8 @@ class WebhookRoutingTest(unittest.TestCase):
         document = SimpleNamespace(markdown=hostile, metadata={"title": "Piège", "source_url": "https://piege.example/p"})
         fake_fc = SimpleNamespace(scrape=lambda url, **kw: document)
         with mock.patch("integrations.firecrawl_client._make_client", lambda env=None: fake_fc), \
-             mock.patch("integrations.firecrawl_client.check_public_url", lambda url, allowed_domains=None: url):
+             mock.patch("integrations.firecrawl_client.check_public_url", lambda url, allowed_domains=None: url), \
+             mock.patch("integrations.web_reader.read", lambda url, env=None: tool_router_error()):
             script = self.run_scenario(
                 ToolRouter(env=ALL_ENV),
                 reply(tool_use("lire_page_web", {"url": "https://piege.example/p"}), stop="tool_use"),
@@ -105,7 +111,10 @@ class WebhookRoutingTest(unittest.TestCase):
             self.assertNotIn(secret, everything)
 
     def test_non_regression_sans_cle_aucun_outil_propose(self):
-        script = self.run_scenario(ToolRouter(env={}), reply(text("Réponse normale")))
+        class NoTools(ToolRouter):
+            def enabled(self):
+                return False
+        script = self.run_scenario(NoTools(env={}), reply(text("Réponse normale")))
         self.assertEqual(len(script.calls), 1)
         self.assertNotIn("tools", script.calls[0])
         self.assertNotIn("outils externes", script.calls[0]["system"])
@@ -117,6 +126,7 @@ class WebhookRoutingTest(unittest.TestCase):
         message = self.sent_texts()[-1]
         self.assertIn("Recherche web (Perplexity) : activé", message)
         self.assertIn("Navigateur (Playwright) : non configuré", message)
+        self.assertIn("Lecture de pages (intégrée) : activé", message)
         self.assertNotIn("TESTKEY", message)
 
     def test_utilisateur_non_autorise_n_atteint_aucun_outil(self):

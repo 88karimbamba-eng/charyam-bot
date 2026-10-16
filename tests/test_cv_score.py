@@ -8,7 +8,8 @@ import test_charyam_telegram as base
 
 bot = base.bot
 
-CV = """# Bamba Abdul Karim
+CV = """# Chargé de portefeuille crédit
+# Bamba Abdul Karim
 Abengourou, Côte d'Ivoire | 88karimbamba@gmail.com
 
 ## Profil
@@ -102,7 +103,9 @@ class ExportTest(unittest.TestCase):
         _, data = bot.build_export(7, "docx")
         document, styles = self.docx_xml(data)
         self.assertNotIn('w:val="Title"', document)           # le nom du candidat ouvre le document
-        self.assertIn('w:val="Heading1"', document)
+        self.assertIn('w:val="CvTitle"', document)            # titre du poste, en grand, avant le nom
+        self.assertIn('w:val="CvName"', document)
+        self.assertLess(document.index("CHARGÉ DE PORTEFEUILLE"), document.index("Bamba Abdul Karim"))
         self.assertIn("1F3A5F", styles)                       # bleu marine
         self.assertIn("0E7C7B", styles)                       # vert-bleu, avec filet sous les sections
         self.assertIn("w:pBdr", styles)
@@ -236,3 +239,44 @@ class CaptionTest(unittest.TestCase):
 
     def test_legende_document_inchangee(self):
         self.assertEqual(bot.export_caption(2), "Fichier créé à partir de ma dernière réponse. Relis-le avant de l'utiliser.")
+
+
+class TitreAvantLeNomTest(unittest.TestCase):
+    CV2 = "# Chargé de clientèle\n# Karim BAMBA\nAbengourou | 01 02 03 04 05\n\n## Profil\nTexte du profil.\n"
+
+    def docx(self, md):
+        import charyam_docs
+        data = charyam_docs.docx_bytes("CV", charyam_docs.markdown_to_blocks(md), theme="cv")
+        with zipfile.ZipFile(io.BytesIO(data)) as z:
+            return z.read("word/document.xml").decode()
+
+    def test_word_titre_du_poste_en_majuscules_avant_le_nom(self):
+        document = self.docx(self.CV2)
+        self.assertIn("CHARGÉ DE CLIENTÈLE", document)
+        self.assertLess(document.index("CHARGÉ DE CLIENTÈLE"), document.index("Karim BAMBA"))
+        self.assertIn('w:val="CvTitle"', document)
+        self.assertIn('w:val="CvName"', document)
+
+    def test_word_un_seul_titre_est_le_nom(self):
+        document = self.docx("# Karim BAMBA\n\n## Profil\nTexte.\n")
+        self.assertIn('w:val="CvName"', document)
+        self.assertNotIn('w:val="CvTitle"', document)
+
+    def test_pdf_titre_avant_le_nom_et_plus_grand(self):
+        import charyam_docs
+        from pypdf import PdfReader
+        data = charyam_docs.pdf_bytes("CV", charyam_docs.markdown_to_blocks(self.CV2), theme="cv")
+        text = PdfReader(io.BytesIO(data)).pages[0].extract_text()
+        self.assertLess(text.index("CHARGÉ DE CLIENTÈLE"), text.index("Karim BAMBA"))
+
+    def test_autres_documents_gardent_leurs_titres(self):
+        import charyam_docs
+        data = charyam_docs.docx_bytes("Devis", charyam_docs.markdown_to_blocks("# A\n# B\n"))
+        with zipfile.ZipFile(io.BytesIO(data)) as z:
+            document = z.read("word/document.xml").decode()
+        self.assertNotIn("CvTitle", document)
+        self.assertEqual(document.count('w:val="Heading1"'), 2)
+
+    def test_la_consigne_demande_titre_puis_nom(self):
+        prompt = bot.build_system_prompt("Karim", bot.MODE_EMPLOI)
+        self.assertIn("d'abord le titre du poste visé", prompt)

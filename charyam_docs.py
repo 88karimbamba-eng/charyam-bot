@@ -156,6 +156,8 @@ def _styles_xml(scale: float = 1.0) -> str:
         f'<w:pPr><w:spacing w:after="{round(120 * scale)}" w:line="262" w:lineRule="auto"/></w:pPr></w:style>'
         + _style("Title", "Title", 40, True, 0, 240, color=COLOR_NAVY, scale=scale)
         + _style("Heading1", "heading 1", 36, True, 0, 60, color=COLOR_NAVY, scale=scale)
+        + _style("CvTitle", "CV titre du poste", 48, True, 0, 40, color=COLOR_NAVY, scale=scale)
+        + _style("CvName", "CV nom", 34, True, 0, 60, color=COLOR_TEAL, scale=scale)
         + _style("Heading2", "heading 2", 24, True, 240, 100, color=COLOR_TEAL, rule=COLOR_TEAL, scale=scale)
         + _style("Heading3", "heading 3", 22, True, 160, 60, color=COLOR_NAVY, scale=scale)
         + "</w:styles>"
@@ -212,10 +214,18 @@ def docx_bytes(title: str, blocks: list[dict], author: str = "CHARYAM", theme: s
         # Word et le moteur PDF ne coupent pas exactement les pages au même endroit : marge de sécurité de 3 %
         scale = round(cv_layout(blocks, title)["scale"] * 0.97, 3) if theme == "cv" else 1.0
     body = [] if theme == "cv" else [_para(title, style="Title")]
-    for blk in blocks[:MAX_BLOCKS]:
+    h1_seen = 0
+    for idx, blk in enumerate(blocks[:MAX_BLOCKS]):
         t = blk.get("type")
         if t in ("h1", "h2", "h3"):
-            body.append(_para(blk["text"], style={"h1": "Heading1", "h2": "Heading2", "h3": "Heading3"}[t]))
+            style_id = {"h1": "Heading1", "h2": "Heading2", "h3": "Heading3"}[t]
+            text = blk["text"]
+            if theme == "cv" and t == "h1" and h1_seen < 2:
+                # CV : d'abord le titre du poste en grandes majuscules, puis le nom et les prénoms
+                titled = h1_seen == 0 and any(b.get("type") == "h1" for b in blocks[idx + 1:])
+                style_id, text = ("CvTitle", text.upper()) if titled else ("CvName", text)
+                h1_seen += 2 if not titled else 1
+            body.append(_para(text, style=style_id))
         elif t == "bullet":
             body.append(_para("•  " + blk["text"], indent=(567, 283), after=round(60 * scale)))
         elif t == "num":
@@ -284,6 +294,10 @@ def _pdf_build(title: str, blocks: list[dict], author: str, theme: str, scale: f
     st = {
         "title": ParagraphStyle("t", parent=base["Title"], fontName="Helvetica-Bold", fontSize=S(20), spaceAfter=S(12),
                                 textColor=colors.HexColor("#" + COLOR_NAVY)),
+        "cvtitle": ParagraphStyle("cvt", parent=base["Heading1"], fontName="Helvetica-Bold", fontSize=S(24), leading=S(28),
+                                  spaceBefore=S(0), spaceAfter=S(2), textColor=colors.HexColor("#" + COLOR_NAVY)),
+        "cvname": ParagraphStyle("cvn", parent=base["Heading1"], fontName="Helvetica-Bold", fontSize=S(17), leading=S(21),
+                                 spaceBefore=S(0), spaceAfter=S(4), textColor=colors.HexColor("#" + COLOR_TEAL)),
         "h1": ParagraphStyle("h1", parent=base["Heading1"], fontName="Helvetica-Bold", fontSize=S(18), spaceBefore=S(0),
                              spaceAfter=S(4), textColor=colors.HexColor("#" + COLOR_NAVY)),
         "h2": ParagraphStyle("h2", parent=base["Heading2"], fontName="Helvetica-Bold", fontSize=S(12), spaceBefore=S(12),
@@ -308,10 +322,16 @@ def _pdf_build(title: str, blocks: list[dict], author: str, theme: str, scale: f
     doc = _Doc(buf, pagesize=A4, leftMargin=2 * cm, rightMargin=2 * cm, topMargin=2 * cm,
                bottomMargin=2 * cm, title=_winansi(title), author=_winansi(author))
     story = [] if theme == "cv" else [Paragraph(esc(title), st["title"])]
-    for blk in blocks[:MAX_BLOCKS]:
+    h1_seen = 0
+    for idx, blk in enumerate(blocks[:MAX_BLOCKS]):
         t = blk.get("type")
         if t in ("h1", "h2", "h3"):
-            story.append(Paragraph(esc(blk["text"]), st[t]))
+            style_key, text = t, blk["text"]
+            if theme == "cv" and t == "h1" and h1_seen < 2:
+                titled = h1_seen == 0 and any(b.get("type") == "h1" for b in blocks[idx + 1:])
+                style_key, text = ("cvtitle", text.upper()) if titled else ("cvname", text)
+                h1_seen += 1 if titled else 2
+            story.append(Paragraph(esc(text), st[style_key]))
             if t == "h2":
                 story.append(HRFlowable(width="100%", thickness=1, color=colors.HexColor("#" + COLOR_TEAL),
                                         spaceBefore=1, spaceAfter=5))

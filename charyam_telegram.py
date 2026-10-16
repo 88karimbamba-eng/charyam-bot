@@ -33,6 +33,7 @@ import anthropic
 import httpx
 from flask import Flask, request, jsonify
 
+import access
 import charyam_docs
 from integrations.common import redact_secrets
 from integrations.tool_router import ToolRouter, complete_with_tools
@@ -76,6 +77,9 @@ WORKER_THREADS = 4
 KNOWN_FIRST_NAMES = {
     USER_ID: "Karim",
 }
+
+# Testeurs autorisés (variable ALLOWED_USER_IDS) et limite de messages par utilisateur
+access_control = access.AccessControl(USER_ID)
 
 # Validation au démarrage
 if not TELEGRAM_TOKEN:
@@ -803,6 +807,14 @@ def _already_seen(update_id) -> bool:
         return False
 
 
+def _send_notice(chat_id: int, text: str):
+    """Envoie un court message d'information (accès refusé, limite atteinte), sans appeler Claude"""
+    try:
+        send_telegram_message(chat_id, text)
+    except Exception as e:
+        logger.error("Erreur envoi information (%s): %s", type(e).__name__, redact(e))
+
+
 def process_message(user_id: int, chat_id: int, text: str, message_id: int):
     """Traite un message en arrière-plan : une conversation à la fois, erreurs isolées"""
     with _get_chat_lock(chat_id):
@@ -869,8 +881,10 @@ def webhook():
         text = message.get("text") or ""
         message_id = message.get("message_id")
 
-        if user_id != USER_ID:
+        if not access_control.is_allowed(user_id):
             logger.warning("Message ignoré: utilisateur non autorisé (%s)", user_id)
+            if chat_id is not None and access_control.should_notify(user_id, "refus"):
+                executor.submit(_send_notice, chat_id, access.refusal_text(user_id))
             return jsonify({"ok": True})
 
         if chat_id is None or not text.strip():
@@ -884,6 +898,13 @@ def webhook():
 
         if _already_seen(update.get("update_id")):
             logger.info("Mise à jour déjà traitée, ignorée")
+            return jsonify({"ok": True})
+
+        allowed_now, limit_kind = access_control.check_rate(user_id)
+        if not allowed_now:
+            logger.info("Message refusé: limite par %s atteinte (%s)", limit_kind, user_id)
+            if access_control.should_notify(user_id, "limite-" + limit_kind):
+                executor.submit(_send_notice, chat_id, access.rate_limit_text(limit_kind))
             return jsonify({"ok": True})
 
         # Le contenu des messages n'est jamais écrit dans les journaux

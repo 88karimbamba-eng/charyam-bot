@@ -11,6 +11,10 @@ Variables d'environnement
                  CLAUDE_THINKING         (vide = réflexion par défaut du modèle ; "between_tools" = réflexion réduite)
                  WEBHOOK_URL             (défaut : RENDER_EXTERNAL_URL + /webhook)
                  TELEGRAM_WEBHOOK_SECRET (jeton secret du webhook : lettres, chiffres, _ et - uniquement)
+Intégrations (toutes facultatives, voir docs/INTEGRATIONS.md et .env.example) :
+                 PERPLEXITY_API_KEY, FIRECRAWL_API_KEY, COMPOSIO_API_KEY (+ COMPOSIO_USER_ID,
+                 COMPOSIO_READONLY_TOOLS, COMPOSIO_TOOL_VERSION), PLAYWRIGHT_CDP_URL ou PLAYWRIGHT_LOCAL
+                 (+ PLAYWRIGHT_ALLOWED_DOMAINS)
 """
 
 import os
@@ -29,6 +33,8 @@ import httpx
 from flask import Flask, request, jsonify
 
 import charyam_docs
+from integrations.common import redact_secrets
+from integrations.tool_router import ToolRouter, complete_with_tools
 
 
 def _env_int(name: str, default: int, minimum: int, maximum: int) -> int:
@@ -105,7 +111,7 @@ def redact(value) -> str:
     for secret in (TELEGRAM_TOKEN, CLAUDE_API_KEY, WEBHOOK_SECRET):
         if secret:
             text = text.replace(secret, "***")
-    return text
+    return redact_secrets(text)
 
 
 class RedactingFormatter(logging.Formatter):
@@ -126,6 +132,9 @@ logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("httpcore").setLevel(logging.WARNING)
 
 logger = logging.getLogger("charyam")
+
+# Outils externes : aucun n'est exposé à Claude tant que sa configuration est incomplète
+ROUTER = ToolRouter()
 
 
 def _idna_codec_works() -> bool:
@@ -184,6 +193,7 @@ def _log_runtime_info():
 
 
 _log_runtime_info()
+logger.info("Intégrations actives : %s", [k for k, v in ROUTER.status().items() if v] or "aucune")
 
 THINKING_PARAM = None
 if CLAUDE_THINKING == "between_tools":
@@ -283,7 +293,16 @@ MODE_SELECTED_TEXT = {
 }
 
 
-MENU_COMMANDS = ("/start", "/menu", "/aide", "/help")
+MENU_COMMANDS = ("/start", "/menu", "/aide", "/help", "/outils")
+
+
+def tools_status_text() -> str:
+    """État des outils externes (activé / non configuré), sans aucun secret"""
+    lines = ["Outils externes :"]
+    for label, active in ROUTER.status().items():
+        lines.append(f"• {label} : {'activé' if active else 'non configuré'}")
+    lines.append("Je ne les utilise que si ta demande l'exige.")
+    return "\n".join(lines)
 
 
 def handle_menu(chat_id: int, text: str):
@@ -294,6 +313,8 @@ def handle_menu(chat_id: int, text: str):
         return MENU_TEXT, MENU_KEYBOARD
     if command in ("/aide", "/help") or text.strip() == BUTTON_AIDE:
         return HELP_TEXT, MENU_KEYBOARD
+    if command == "/outils":
+        return tools_status_text(), MENU_KEYBOARD
     mode = BUTTON_MODES.get(text.strip())
     if mode:
         chat_modes[chat_id] = mode
@@ -576,13 +597,13 @@ def _call_claude(messages: list, system: str, max_tokens: int):
     if use_thinking:
         kwargs["extra_body"] = {"thinking": THINKING_PARAM}
     try:
-        return client.messages.create(**kwargs)
+        return complete_with_tools(lambda **kw: client.messages.create(**kw), kwargs, ROUTER)
     except anthropic.BadRequestError as e:
         if use_thinking and "thinking" in str(e).lower():
             _thinking_rejected = True
             logger.warning("Réglage CLAUDE_THINKING refusé par l'API : désactivé (%s)", redact(e))
             kwargs.pop("extra_body", None)
-            return client.messages.create(**kwargs)
+            return complete_with_tools(lambda **kw: client.messages.create(**kw), kwargs, ROUTER)
         raise
 
 

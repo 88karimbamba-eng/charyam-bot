@@ -125,10 +125,12 @@ class BotTest(unittest.TestCase):
         self.post("/menu@CharyamBot")
         self.assertEqual(self.sent()[-1]["reply_markup"], bot.MENU_KEYBOARD)
 
-    def test_commande_inconnue_ignoree(self):
+    def test_commande_inconnue_repond_sans_appeler_claude(self):
         self.post("/inconnue")
-        self.assertEqual(CLAUDE_CALLS, [])
-        self.assertEqual(self.sent(), [])
+        self.assertEqual(CLAUDE_CALLS, [])                       # aucun coût Claude
+        self.assertEqual(len(self.sent()), 1)
+        self.assertIn("Commande inconnue", self.sent()[0]["text"])
+        self.assertEqual(self.sent()[0]["reply_markup"], bot.MENU_KEYBOARD)
 
     def test_aide(self):
         self.post(bot.BUTTON_AIDE)

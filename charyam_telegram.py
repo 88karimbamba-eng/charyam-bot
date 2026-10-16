@@ -18,6 +18,7 @@ Intégrations (toutes facultatives, voir docs/INTEGRATIONS.md et .env.example) :
 """
 
 import os
+import re
 import hmac
 import time
 import logging
@@ -294,6 +295,52 @@ MODE_SELECTED_TEXT = {
 
 
 MENU_COMMANDS = ("/start", "/menu", "/aide", "/help", "/outils")
+
+UNKNOWN_COMMAND_TEXT = "Commande inconnue. Touche /menu pour voir les choix, ou écris simplement ta demande."
+
+
+def telegram_display(text: str) -> str:
+    """Rend une réponse lisible dans Telegram (qui n'affiche pas le Markdown) : plus d'étoiles ni de dièses.
+
+    Affichage seulement : la version Markdown d'origine reste gardée pour les exports Word/PDF,
+    qui s'en servent pour les titres, listes et tableaux."""
+    out = []
+    in_code = False
+    for line in (text or "").splitlines():
+        stripped = line.strip()
+        if stripped.startswith("```"):
+            in_code = not in_code
+            continue
+        if in_code:
+            out.append(line)
+            continue
+        if re.fullmatch(r"\|?[\s:|-]+\|[\s:|-]*", stripped) and "-" in stripped:      # séparateur de tableau
+            continue
+        if re.fullmatch(r"[-*_]{3,}", stripped):                                         # trait horizontal
+            continue
+        heading = re.match(r"(#{1,6})\s+(.*)", stripped)
+        if heading:
+            title = heading.group(2).strip()
+            out.extend(["", title.upper() if len(heading.group(1)) == 1 else title])
+            continue
+        if stripped.startswith("|") and stripped.endswith("|"):                           # ligne de tableau
+            line = " | ".join(cell.strip() for cell in stripped.strip("|").split("|"))
+        bullet = re.match(r"(\s*)[-*]\s+(.*)", line)
+        if bullet:
+            line = f"{bullet.group(1)}• {bullet.group(2)}"
+        out.append(line)
+    cleaned = "\n".join(out)
+    cleaned = re.sub(r"\*\*(.+?)\*\*", r"\1", cleaned)
+    cleaned = re.sub(r"__(.+?)__", r"\1", cleaned)
+    cleaned = re.sub(r"`+", "", cleaned)
+    return re.sub(r"\n{3,}", "\n\n", cleaned).strip()
+
+
+def _reply_unknown_command(chat_id: int):
+    try:
+        send_telegram_message(chat_id, UNKNOWN_COMMAND_TEXT, reply_markup=MENU_KEYBOARD)
+    except Exception as e:
+        logger.error("Erreur envoi commande inconnue (%s): %s", type(e).__name__, redact(e))
 
 
 def tools_status_text() -> str:
@@ -791,7 +838,7 @@ def process_message(user_id: int, chat_id: int, text: str, message_id: int):
             stop_typing.set()
 
         try:
-            send_telegram_message(chat_id, response_text, reply_to_message_id=message_id)
+            send_telegram_message(chat_id, telegram_display(response_text), reply_to_message_id=message_id)
         except Exception as e:
             logger.error("Erreur envoi réponse (%s): %s", type(e).__name__, redact(e))
 
@@ -832,6 +879,7 @@ def webhook():
         # Commandes : seules celles du menu sont traitées ; les autres restent ignorées
         if text.startswith("/") and text.split()[0].split("@")[0].lower() not in MENU_COMMANDS:
             logger.info("Message ignoré: commande non gérée")
+            executor.submit(_reply_unknown_command, chat_id)
             return jsonify({"ok": True})
 
         if _already_seen(update.get("update_id")):

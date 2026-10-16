@@ -11,6 +11,10 @@ Variables d'environnement
                  CLAUDE_THINKING         (vide = réflexion par défaut du modèle ; "between_tools" = réflexion réduite)
                  WEBHOOK_URL             (défaut : RENDER_EXTERNAL_URL + /webhook)
                  TELEGRAM_WEBHOOK_SECRET (jeton secret du webhook : lettres, chiffres, _ et - uniquement)
+Intégrations (toutes facultatives, voir docs/INTEGRATIONS.md et .env.example) :
+                 PERPLEXITY_API_KEY, FIRECRAWL_API_KEY, COMPOSIO_API_KEY (+ COMPOSIO_USER_ID,
+                 COMPOSIO_READONLY_TOOLS, COMPOSIO_TOOL_VERSION), PLAYWRIGHT_CDP_URL ou PLAYWRIGHT_LOCAL
+                 (+ PLAYWRIGHT_ALLOWED_DOMAINS)
 """
 
 import os
@@ -27,6 +31,10 @@ from concurrent.futures import ThreadPoolExecutor
 import anthropic
 import httpx
 from flask import Flask, request, jsonify
+
+import charyam_docs
+from integrations.common import redact_secrets
+from integrations.tool_router import ToolRouter, complete_with_tools
 
 
 def _env_int(name: str, default: int, minimum: int, maximum: int) -> int:
@@ -88,6 +96,8 @@ executor = ThreadPoolExecutor(max_workers=WORKER_THREADS, thread_name_prefix="ch
 # Mémoire simple par chat (en RAM : perdue à chaque redémarrage)
 chat_memory = {}
 chat_modes = {}              # activité choisie dans le menu, par chat (perdue au redémarrage)
+last_answers = {}            # dernière réponse de Claude, par chat, pour l'export Word/PDF (en RAM)
+LAST_ANSWERS_MAX = 200       # nombre maximal de chats gardés dans last_answers
 _chat_locks = {}
 _state_lock = threading.Lock()
 _seen_updates = OrderedDict()
@@ -101,7 +111,7 @@ def redact(value) -> str:
     for secret in (TELEGRAM_TOKEN, CLAUDE_API_KEY, WEBHOOK_SECRET):
         if secret:
             text = text.replace(secret, "***")
-    return text
+    return redact_secrets(text)
 
 
 class RedactingFormatter(logging.Formatter):
@@ -122,6 +132,9 @@ logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("httpcore").setLevel(logging.WARNING)
 
 logger = logging.getLogger("charyam")
+
+# Outils externes : aucun n'est exposé à Claude tant que sa configuration est incomplète
+ROUTER = ToolRouter()
 
 
 def _idna_codec_works() -> bool:
@@ -180,6 +193,7 @@ def _log_runtime_info():
 
 
 _log_runtime_info()
+logger.info("Intégrations actives : %s", [k for k, v in ROUTER.status().items() if v] or "aucune")
 
 THINKING_PARAM = None
 if CLAUDE_THINKING == "between_tools":
@@ -196,6 +210,10 @@ MODE_DOCUMENTS = "documents"
 BUTTON_EMPLOI = "💼 Emploi & Candidatures"
 BUTTON_DOCUMENTS = "📄 Documents professionnels"
 BUTTON_AIDE = "❓ Aide"
+BUTTON_WORD = "⬇️ Word"
+BUTTON_PDF = "⬇️ PDF"
+
+EXPORT_BUTTONS = {BUTTON_WORD: "docx", BUTTON_PDF: "pdf"}
 
 BUTTON_MODES = {
     BUTTON_EMPLOI: MODE_EMPLOI,
@@ -205,7 +223,12 @@ BUTTON_MODES = {
 # Clavier permanent : chaque bouton envoie son libellé comme un message texte ordinaire,
 # ce qui fonctionne avec allowed_updates=["message"] (pas de callback_query à gérer).
 MENU_KEYBOARD = {
-    "keyboard": [[{"text": BUTTON_EMPLOI}], [{"text": BUTTON_DOCUMENTS}], [{"text": BUTTON_AIDE}]],
+    "keyboard": [
+        [{"text": BUTTON_EMPLOI}],
+        [{"text": BUTTON_DOCUMENTS}],
+        [{"text": BUTTON_WORD}, {"text": BUTTON_PDF}],
+        [{"text": BUTTON_AIDE}],
+    ],
     "resize_keyboard": True,
     "is_persistent": True,
 }
@@ -216,27 +239,32 @@ MODE_PROMPTS = {
         "adapter un CV, rédiger des lettres de motivation et des emails de candidature, "
         "et préparer des entretiens. N'invente jamais d'expérience, de diplôme, de date, "
         "d'employeur ou de chiffre : utilise uniquement ce que la personne fournit et demande "
-        "ce qui manque. Signale honnêtement les écarts entre son profil et les exigences du poste."
+        "ce qui manque. Signale honnêtement les écarts entre son profil et les exigences du poste. "
+        "Structure les CV et les lettres avec des titres (#) et des listes (-) : la personne pourra "
+        "ensuite en obtenir une copie Word ou PDF avec les boutons du menu."
     ),
     MODE_DOCUMENTS: (
         "Activité en cours : Documents professionnels. Tu rédiges des courriers, devis, factures, "
         "comptes rendus et rapports. Pour tout montant, détaille le calcul ligne par ligne "
         "(quantité × prix unitaire, total HT, taxe, total TTC) et vérifie-le. N'invente aucun prix, "
-        "taux de taxe, nom ou coordonnée : écris [à compléter]. Tu réponds en texte uniquement : "
-        "tu ne peux pas encore envoyer de fichier Word ou PDF, ne prétends jamais l'avoir fait."
+        "taux de taxe, nom ou coordonnée : écris [à compléter]. Écris le document dans ta réponse, "
+        "structuré avec des titres (#), des listes (-) et des tableaux Markdown (|) : la personne "
+        "pourra ensuite en obtenir une copie Word ou PDF avec les boutons du menu."
     ),
 }
 
 MODE_RULE = (
     "Quand tu analyses ou conseilles, sépare clairement trois parties : « Données fournies », "
     "« Hypothèses » et « Recommandations ». Quand tu rédiges un document, donne le document, "
-    "puis liste à part tes hypothèses et les éléments à compléter."
+    "puis liste à part tes hypothèses et les éléments à compléter. "
+    "Tu ne crées ni n'envoies jamais de fichier toi-même : n'affirme jamais l'avoir fait."
 )
 
 MENU_TEXT = (
     "Choisis une activité dans le menu ci-dessous, ou écris simplement ta question.\n\n"
     f"{BUTTON_EMPLOI} : analyse d'offre, CV, lettre, email de candidature, entretien.\n"
-    f"{BUTTON_DOCUMENTS} : courrier, devis, facture, compte rendu, rapport."
+    f"{BUTTON_DOCUMENTS} : courrier, devis, facture, compte rendu, rapport.\n\n"
+    f"{BUTTON_WORD} ou {BUTTON_PDF} : recevoir ma dernière réponse en fichier."
 )
 
 HELP_TEXT = (
@@ -245,7 +273,8 @@ HELP_TEXT = (
     "de détails possible (offre complète, ton parcours, montants…).\n"
     "• Je ne devine pas les informations manquantes : je te les demande ou je les marque "
     "[à compléter].\n"
-    "• Je réponds en texte. L'envoi de fichiers Word/PDF n'est pas encore disponible.\n"
+    "• Après une réponse, touche ⬇️ Word ou ⬇️ PDF pour la recevoir en fichier "
+    "(le fichier contient ma dernière réponse, à relire avant usage).\n"
     "• Je ne retiens que la conversation en cours, et je peux l'oublier après un redémarrage.\n\n"
     "Commandes : /menu pour afficher le menu, /aide pour ce message."
 )
@@ -264,7 +293,16 @@ MODE_SELECTED_TEXT = {
 }
 
 
-MENU_COMMANDS = ("/start", "/menu", "/aide", "/help")
+MENU_COMMANDS = ("/start", "/menu", "/aide", "/help", "/outils")
+
+
+def tools_status_text() -> str:
+    """État des outils externes (activé / non configuré), sans aucun secret"""
+    lines = ["Outils externes :"]
+    for label, active in ROUTER.status().items():
+        lines.append(f"• {label} : {'activé' if active else 'non configuré'}")
+    lines.append("Je ne les utilise que si ta demande l'exige.")
+    return "\n".join(lines)
 
 
 def handle_menu(chat_id: int, text: str):
@@ -275,11 +313,85 @@ def handle_menu(chat_id: int, text: str):
         return MENU_TEXT, MENU_KEYBOARD
     if command in ("/aide", "/help") or text.strip() == BUTTON_AIDE:
         return HELP_TEXT, MENU_KEYBOARD
+    if command == "/outils":
+        return tools_status_text(), MENU_KEYBOARD
     mode = BUTTON_MODES.get(text.strip())
     if mode:
         chat_modes[chat_id] = mode
         return MODE_SELECTED_TEXT[mode], MENU_KEYBOARD
     return None
+
+
+# ---------------------------------------------------------------- Export Word / PDF
+
+EXPORT_TITLES = {MODE_EMPLOI: "Candidature", MODE_DOCUMENTS: "Document professionnel"}
+EXPORT_MIME = {
+    "docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    "pdf": "application/pdf",
+}
+NO_ANSWER_TEXT = (
+    "Je n'ai pas de réponse récente à convertir (je l'oublie après un redémarrage). "
+    "Demande-moi d'abord le document, puis touche à nouveau le bouton."
+)
+
+
+def _remember_answer(chat_id: int, text: str):
+    """Garde la dernière réponse du chat pour l'export (borné en nombre de chats)"""
+    last_answers.pop(chat_id, None)
+    last_answers[chat_id] = text
+    while len(last_answers) > LAST_ANSWERS_MAX:
+        last_answers.pop(next(iter(last_answers)))
+
+
+def build_export(chat_id: int, fmt: str):
+    """Construit (nom_de_fichier, octets) à partir de la dernière réponse du chat.
+    Tout reste en mémoire : aucun fichier temporaire. Lève ValueError (message destiné
+    à l'utilisateur) s'il n'y a rien à convertir."""
+    text = last_answers.get(chat_id)
+    if not text:
+        raise ValueError(NO_ANSWER_TEXT)
+    title = EXPORT_TITLES.get(chat_modes.get(chat_id), "Document CHARYAM")
+    blocks = charyam_docs.markdown_to_blocks(text)
+    if fmt == "pdf":
+        data = charyam_docs.pdf_bytes(title, blocks)
+    else:
+        data = charyam_docs.docx_bytes(title, blocks)
+    filename = charyam_docs.safe_filename(f"{title}_{time.strftime('%Y-%m-%d')}", fmt)
+    return filename, data
+
+
+def _handle_export(chat_id: int, fmt: str):
+    """Génère et envoie le fichier. Ne dit « envoyé » que si Telegram a accepté le fichier."""
+    try:
+        filename, data = build_export(chat_id, fmt)
+    except ValueError as e:
+        send_telegram_message(chat_id, str(e), reply_markup=MENU_KEYBOARD)
+        return
+    except Exception as e:
+        logger.error("Erreur création %s (%s): %s", fmt, type(e).__name__, redact(e))
+        other = "Word" if fmt == "pdf" else "PDF"
+        send_telegram_message(
+            chat_id,
+            f"Je n'ai pas pu créer ce fichier. Réessaie, ou demande le format {other}.",
+            reply_markup=MENU_KEYBOARD,
+        )
+        return
+    try:
+        result = send_telegram_document(
+            chat_id, filename, data, EXPORT_MIME[fmt],
+            caption="Fichier créé à partir de ma dernière réponse. Relis-le avant de l'utiliser.",
+        )
+    except Exception as e:
+        logger.error("Erreur envoi fichier (%s): %s", type(e).__name__, redact(e))
+        result = {"ok": False}
+    if result.get("ok"):
+        logger.info("Telegram: fichier %s envoyé (chat %s, %s octets)", fmt, chat_id, len(data))
+    else:
+        logger.error("Telegram a refusé le fichier: %s", redact(result))
+        send_telegram_message(
+            chat_id, "Le fichier a été créé mais l'envoi a échoué. Réessaie dans un instant.",
+            reply_markup=MENU_KEYBOARD,
+        )
 
 
 def build_system_prompt(first_name: str = "", mode: str = None) -> str:
@@ -327,6 +439,36 @@ def tg_call(method: str, payload: dict = None) -> dict:
     return data if isinstance(data, dict) else {"ok": False, "description": "réponse inattendue"}
 
 
+def _log_webhook_status():
+    """Journalise l'état du webhook tel que Telegram le voit (getWebhookInfo).
+
+    Ni le jeton ni le secret n'y figurent : c'est le diagnostic qu'il fallait faire à la main
+    dans un navigateur avec le jeton. Il montre si l'URL est la bonne, combien de messages
+    attendent, et la dernière erreur de livraison rencontrée par Telegram."""
+    try:
+        info = tg_call("getWebhookInfo")
+        if not info.get("ok"):
+            logger.warning("État du webhook illisible: %s", redact(info.get("description")))
+            return
+        result = info.get("result") or {}
+        error_date = result.get("last_error_date")
+        when = (
+            time.strftime("%Y-%m-%d %H:%M:%S UTC", time.gmtime(error_date))
+            if isinstance(error_date, (int, float)) else "jamais"
+        )
+        logger.info(
+            "État du webhook Telegram: url_conforme=%s en_attente=%s derniere_erreur=%s (%s) "
+            "mises_a_jour_autorisees=%s",
+            result.get("url") == WEBHOOK_URL,
+            result.get("pending_update_count"),
+            when,
+            redact(result.get("last_error_message") or "aucune")[:200],
+            result.get("allowed_updates"),
+        )
+    except Exception as e:
+        logger.warning("État du webhook indisponible (%s): %s", type(e).__name__, redact(e))
+
+
 def _configure_webhook():
     """Configure le webhook sans appel inutile : getWebhookInfo d'abord, setWebhook seulement
     si l'URL diffère. Jusqu'à 3 tentatives (ReadTimeout isolé, démarrage à froid)."""
@@ -337,6 +479,7 @@ def _configure_webhook():
                 info = tg_call("getWebhookInfo")
                 if info.get("ok") and (info.get("result") or {}).get("url") == WEBHOOK_URL:
                     logger.info("✅ Webhook déjà configuré: %s", WEBHOOK_URL)
+                    _log_webhook_status()
                     return
 
             payload = {"url": WEBHOOK_URL, "allowed_updates": ["message"]}
@@ -346,6 +489,7 @@ def _configure_webhook():
             if result.get("ok"):
                 _secret_active = bool(WEBHOOK_SECRET)
                 logger.info("✅ Webhook configuré: %s", WEBHOOK_URL)
+                _log_webhook_status()
                 return
             logger.error("❌ Erreur webhook (tentative %s/3): %s", attempt, redact(result))
         except Exception as e:
@@ -415,6 +559,20 @@ def send_telegram_message(chat_id: int, text: str, reply_to_message_id: int = No
     return data
 
 
+def send_telegram_document(chat_id: int, filename: str, data: bytes, mime: str, caption: str = None) -> dict:
+    """Envoie un fichier (multipart). Retourne toujours un dict, comme tg_call."""
+    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendDocument"
+    form = {"chat_id": str(chat_id)}
+    if caption:
+        form["caption"] = caption
+    response = telegram_http.post(url, data=form, files={"document": (filename, data, mime)})
+    try:
+        result = response.json()
+    except ValueError:
+        return {"ok": False, "description": f"HTTP {response.status_code}, réponse non JSON"}
+    return result if isinstance(result, dict) else {"ok": False, "description": "réponse inattendue"}
+
+
 def _typing_loop(chat_id: int, stop: threading.Event):
     """Affiche « écrit… » pendant que Claude répond (échecs ignorés)"""
     while not stop.is_set():
@@ -471,13 +629,13 @@ def _call_claude(messages: list, system: str, max_tokens: int):
     if use_thinking:
         kwargs["extra_body"] = {"thinking": THINKING_PARAM}
     try:
-        return client.messages.create(**kwargs)
+        return complete_with_tools(lambda **kw: client.messages.create(**kw), kwargs, ROUTER)
     except anthropic.BadRequestError as e:
         if use_thinking and "thinking" in str(e).lower():
             _thinking_rejected = True
             logger.warning("Réglage CLAUDE_THINKING refusé par l'API : désactivé (%s)", redact(e))
             kwargs.pop("extra_body", None)
-            return client.messages.create(**kwargs)
+            return complete_with_tools(lambda **kw: client.messages.create(**kw), kwargs, ROUTER)
         raise
 
 
@@ -556,6 +714,10 @@ def get_claude_response(user_id: int, chat_id: int, user_message: str, first_nam
 
         # Mémoire : uniquement du texte, jamais de blocs « thinking »
         chat_memory[chat_id] = trim_history(messages + [{"role": "assistant", "content": text}])
+        _remember_answer(
+            chat_id,
+            text + ("\n\n[Réponse incomplète : limite de longueur atteinte.]" if stop_reason == "max_tokens" else ""),
+        )
 
         if stop_reason == "max_tokens":
             return (
@@ -597,6 +759,14 @@ def _already_seen(update_id) -> bool:
 def process_message(user_id: int, chat_id: int, text: str, message_id: int):
     """Traite un message en arrière-plan : une conversation à la fois, erreurs isolées"""
     with _get_chat_lock(chat_id):
+        export_format = EXPORT_BUTTONS.get(text.strip())
+        if export_format:
+            try:
+                _handle_export(chat_id, export_format)
+            except Exception as e:
+                logger.error("Erreur export (%s): %s", type(e).__name__, redact(e))
+            return
+
         menu_reply = handle_menu(chat_id, text)
         if menu_reply:
             reply_text, keyboard = menu_reply
@@ -638,10 +808,13 @@ def webhook():
     try:
         update = request.get_json(silent=True)
         if not isinstance(update, dict):
+            logger.info("Requête ignorée: corps absent ou non JSON")
             return jsonify({"ok": True})
 
         message = update.get("message")
         if not isinstance(message, dict):
+            # Seuls les NOMS de champs sont journalisés, jamais leur contenu
+            logger.info("Mise à jour ignorée: pas de message (champs: %s)", sorted(update)[:8])
             return jsonify({"ok": True})
 
         user_id = (message.get("from") or {}).get("id")
@@ -653,10 +826,12 @@ def webhook():
             logger.warning("Message ignoré: utilisateur non autorisé (%s)", user_id)
             return jsonify({"ok": True})
 
-        if chat_id is None or not text:
+        if chat_id is None or not text.strip():
+            logger.info("Message ignoré: sans texte exploitable (champs: %s)", sorted(message)[:10])
             return jsonify({"ok": True})
         # Commandes : seules celles du menu sont traitées ; les autres restent ignorées
         if text.startswith("/") and text.split()[0].split("@")[0].lower() not in MENU_COMMANDS:
+            logger.info("Message ignoré: commande non gérée")
             return jsonify({"ok": True})
 
         if _already_seen(update.get("update_id")):

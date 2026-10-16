@@ -1,2 +1,7 @@
 __pycache__/
 *.pyc
+
+# Secrets locaux : ne jamais commiter
+.env
+.env.*
+!.env.example

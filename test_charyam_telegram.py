@@ -112,7 +112,9 @@ class BotTest(unittest.TestCase):
     def test_utilisateur_non_autorise_ignore(self):
         self.post("bonjour", user_id=1)
         self.assertEqual(CLAUDE_CALLS, [])
-        self.assertEqual(self.sent(), [])
+        # Claude n'est jamais appelé ; l'inconnu reçoit seulement un court message avec son identifiant
+        self.assertEqual(len(self.sent()), 1)
+        self.assertIn("identifiant Telegram est 1", self.sent()[0]["text"])
 
     def test_start_affiche_le_menu_sans_claude(self):
         self.post("/start")

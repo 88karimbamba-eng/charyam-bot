@@ -112,3 +112,10 @@ Chaque message reçu mais non traité laisse aussi une trace avec sa **raison** 
 - **Ne marche pas** : pages qui exigent une connexion (LinkedIn, Facebook, Instagram, TikTok…) ou chargées par JavaScript. Le bot le dit et demande de coller le texte ; il n'invente rien. Firecrawl ou Playwright peuvent aider pour le JavaScript, pas pour les connexions.
 - **Garde-fous** : chaque adresse et chaque redirection passent par `check_public_url` (5 redirections max), 1,5 Mo lus au maximum, texte/HTML uniquement, contenu encadré comme donnée non fiable. `robots.txt` n'est pas consulté (lecture ponctuelle demandée par l'utilisateur). Limite connue : DNS rebinding non couvert à 100 %.
 - **Effet de bord à connaître** : comme un outil est maintenant toujours exposé, chaque message envoie à Claude la définition de l'outil et les règles d'usage (quelques centaines de jetons de plus par message). `/outils` affiche « Lecture de pages (intégrée) : activé ».
+
+### 11 bis. Lecture de PDF et documents liés
+
+- `lire_page_web` lit aussi les **PDF publics** (`pypdf==6.19.0`, pur Python) : 12 Mo maximum, 40 pages maximum, texte tronqué à 30 000 caractères. Un PDF **scanné** (images sans texte) ou protégé par mot de passe est refusé avec un message clair.
+- Quand une page contient des liens vers des documents (`.pdf`, `.docx`, `.xlsx`…), ils sont listés à la fin du texte pour que Claude puisse ouvrir le PDF. Seuls les PDF sont lisibles ; les autres formats sont seulement signalés.
+- Mesuré sur un vrai PDF de 8,9 Mo / 18 pages : 2,7 s, environ +31 Mo de mémoire (Render gratuit : 512 Mo).
+- **Coût** : un PDF de 30 000 caractères représente de l'ordre de 8 000 à 10 000 jetons d'entrée (estimation, pas une mesure) pour ce message et les suivants de la même conversation, tant qu'ils restent dans l'historique.

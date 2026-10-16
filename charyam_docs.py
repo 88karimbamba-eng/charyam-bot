@@ -131,7 +131,8 @@ _DOC_RELS = (
 
 
 def _style(sid: str, name: str, size: int, bold: bool, before: int = 0, after: int = 120,
-           color: str = "", rule: str = "") -> str:
+           color: str = "", rule: str = "", scale: float = 1.0) -> str:
+    size, before, after = round(size * scale), round(before * scale), round(after * scale)
     b = "<w:b/>" if bold else ""
     c = f'<w:color w:val="{color}"/>' if color else ""
     border = (f'<w:pBdr><w:bottom w:val="single" w:sz="8" w:space="2" w:color="{rule}"/></w:pBdr>'
@@ -144,19 +145,24 @@ def _style(sid: str, name: str, size: int, bold: bool, before: int = 0, after: i
     )
 
 
-_STYLES = (
-    '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
-    '<w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
-    '<w:docDefaults><w:rPrDefault><w:rPr><w:rFonts w:ascii="Calibri" w:hAnsi="Calibri" w:cs="Calibri"/>'
-    '<w:sz w:val="22"/><w:lang w:val="fr-FR"/></w:rPr></w:rPrDefault></w:docDefaults>'
-    '<w:style w:type="paragraph" w:default="1" w:styleId="Normal"><w:name w:val="Normal"/><w:qFormat/>'
-    '<w:pPr><w:spacing w:after="120" w:line="264" w:lineRule="auto"/></w:pPr></w:style>'
-    + _style("Title", "Title", 40, True, 0, 240, color=COLOR_NAVY)
-    + _style("Heading1", "heading 1", 36, True, 0, 60, color=COLOR_NAVY)
-    + _style("Heading2", "heading 2", 24, True, 240, 100, color=COLOR_TEAL, rule=COLOR_TEAL)
-    + _style("Heading3", "heading 3", 22, True, 160, 60, color=COLOR_NAVY)
-    + "</w:styles>"
-)
+def _styles_xml(scale: float = 1.0) -> str:
+    """Styles Word ; `scale` agrandit ou réduit tailles et espacements (ajustement du CV à la page)."""
+    return (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        '<w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+        '<w:docDefaults><w:rPrDefault><w:rPr><w:rFonts w:ascii="Calibri" w:hAnsi="Calibri" w:cs="Calibri"/>'
+        f'<w:sz w:val="{round(21 * scale)}"/><w:lang w:val="fr-FR"/></w:rPr></w:rPrDefault></w:docDefaults>'
+        '<w:style w:type="paragraph" w:default="1" w:styleId="Normal"><w:name w:val="Normal"/><w:qFormat/>'
+        f'<w:pPr><w:spacing w:after="{round(120 * scale)}" w:line="262" w:lineRule="auto"/></w:pPr></w:style>'
+        + _style("Title", "Title", 40, True, 0, 240, color=COLOR_NAVY, scale=scale)
+        + _style("Heading1", "heading 1", 36, True, 0, 60, color=COLOR_NAVY, scale=scale)
+        + _style("Heading2", "heading 2", 24, True, 240, 100, color=COLOR_TEAL, rule=COLOR_TEAL, scale=scale)
+        + _style("Heading3", "heading 3", 22, True, 160, 60, color=COLOR_NAVY, scale=scale)
+        + "</w:styles>"
+    )
+
+
+_STYLES = _styles_xml(1.0)
 
 
 def _run(text: str, bold: bool = False) -> str:
@@ -165,10 +171,12 @@ def _run(text: str, bold: bool = False) -> str:
 
 
 def _para(text: str, style: str | None = None, indent: tuple[int, int] | None = None,
-          bold: bool = False, align: str | None = None) -> str:
+          bold: bool = False, align: str | None = None, after: int | None = None) -> str:
     ppr = ""
     if style:
         ppr += f'<w:pStyle w:val="{style}"/>'
+    if after is not None:
+        ppr += f'<w:spacing w:after="{after}"/>'
     if indent:
         ppr += f'<w:ind w:left="{indent[0]}" w:hanging="{indent[1]}"/>'
     if align:
@@ -196,19 +204,22 @@ def _table(rows: list[list[str]]) -> str:
     return "".join(out)
 
 
-def docx_bytes(title: str, blocks: list[dict], author: str = "CHARYAM", theme: str = "doc") -> bytes:
+def docx_bytes(title: str, blocks: list[dict], author: str = "CHARYAM", theme: str = "doc", scale: float | None = None) -> bytes:
     """Construit un fichier .docx valide et le renvoie en mémoire.
 
     theme="cv" : pas de titre automatique (le nom du candidat, en titre 1, ouvre le document)."""
+    if scale is None:
+        # Word et le moteur PDF ne coupent pas exactement les pages au même endroit : marge de sécurité de 3 %
+        scale = round(cv_layout(blocks, title)["scale"] * 0.97, 3) if theme == "cv" else 1.0
     body = [] if theme == "cv" else [_para(title, style="Title")]
     for blk in blocks[:MAX_BLOCKS]:
         t = blk.get("type")
         if t in ("h1", "h2", "h3"):
             body.append(_para(blk["text"], style={"h1": "Heading1", "h2": "Heading2", "h3": "Heading3"}[t]))
         elif t == "bullet":
-            body.append(_para("•  " + blk["text"], indent=(567, 283)))
+            body.append(_para("•  " + blk["text"], indent=(567, 283), after=round(60 * scale)))
         elif t == "num":
-            body.append(_para(f'{blk.get("n", 1)}.  {blk["text"]}', indent=(567, 283)))
+            body.append(_para(f'{blk.get("n", 1)}.  {blk["text"]}', indent=(567, 283), after=round(60 * scale)))
         elif t == "table" and blk.get("rows"):
             body.append(_table(blk["rows"]))
         else:
@@ -236,7 +247,7 @@ def docx_bytes(title: str, blocks: list[dict], author: str = "CHARYAM", theme: s
         z.writestr("_rels/.rels", _ROOT_RELS)
         z.writestr("word/document.xml", document)
         z.writestr("word/_rels/document.xml.rels", _DOC_RELS)
-        z.writestr("word/styles.xml", _STYLES)
+        z.writestr("word/styles.xml", _styles_xml(scale) if scale != 1.0 else _STYLES)
         z.writestr("docProps/core.xml", core)
     return buf.getvalue()
 
@@ -249,7 +260,14 @@ def _winansi(text: str) -> str:
     return _clean(text).encode("cp1252", errors="replace").decode("cp1252")
 
 
-def pdf_bytes(title: str, blocks: list[dict], author: str = "CHARYAM", theme: str = "doc") -> bytes:
+def pdf_bytes(title: str, blocks: list[dict], author: str = "CHARYAM", theme: str = "doc", scale: float | None = None) -> bytes:
+    if scale is None:
+        scale = cv_layout(blocks, title)["scale"] if theme == "cv" else 1.0
+    return _pdf_build(title, blocks, author, theme, scale)[0]
+
+
+def _pdf_build(title: str, blocks: list[dict], author: str, theme: str, scale: float):
+    """Construit le PDF à l'échelle donnée. Retourne (octets, nombre_de_pages, remplissage_de_la_dernière_page)."""
     from reportlab.lib import colors
     from reportlab.lib.pagesizes import A4
     from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
@@ -259,25 +277,36 @@ def pdf_bytes(title: str, blocks: list[dict], author: str = "CHARYAM", theme: st
     def esc(s: str) -> str:
         return _xml_escape(_winansi(s))
 
+    def S(x):
+        return x * scale
+
     base = getSampleStyleSheet()
     st = {
-        "title": ParagraphStyle("t", parent=base["Title"], fontName="Helvetica-Bold", fontSize=20, spaceAfter=12,
+        "title": ParagraphStyle("t", parent=base["Title"], fontName="Helvetica-Bold", fontSize=S(20), spaceAfter=S(12),
                                 textColor=colors.HexColor("#" + COLOR_NAVY)),
-        "h1": ParagraphStyle("h1", parent=base["Heading1"], fontName="Helvetica-Bold", fontSize=18, spaceBefore=0,
-                             spaceAfter=4, textColor=colors.HexColor("#" + COLOR_NAVY)),
-        "h2": ParagraphStyle("h2", parent=base["Heading2"], fontName="Helvetica-Bold", fontSize=12, spaceBefore=12,
-                             spaceAfter=2, textColor=colors.HexColor("#" + COLOR_TEAL)),
-        "h3": ParagraphStyle("h3", parent=base["Heading3"], fontName="Helvetica-Bold", fontSize=11, spaceBefore=8,
+        "h1": ParagraphStyle("h1", parent=base["Heading1"], fontName="Helvetica-Bold", fontSize=S(18), spaceBefore=S(0),
+                             spaceAfter=S(4), textColor=colors.HexColor("#" + COLOR_NAVY)),
+        "h2": ParagraphStyle("h2", parent=base["Heading2"], fontName="Helvetica-Bold", fontSize=S(12), spaceBefore=S(12),
+                             spaceAfter=S(2), textColor=colors.HexColor("#" + COLOR_TEAL)),
+        "h3": ParagraphStyle("h3", parent=base["Heading3"], fontName="Helvetica-Bold", fontSize=S(11), spaceBefore=S(8),
                              textColor=colors.HexColor("#" + COLOR_NAVY)),
-        "p": ParagraphStyle("p", parent=base["BodyText"], fontName="Helvetica", fontSize=10.5, leading=14, spaceAfter=6),
-        "li": ParagraphStyle("li", parent=base["BodyText"], fontName="Helvetica", fontSize=10.5, leading=14,
-                             leftIndent=18, firstLineIndent=-10, spaceAfter=3),
-        "cell": ParagraphStyle("c", parent=base["BodyText"], fontName="Helvetica", fontSize=9.5, leading=12),
-        "cellb": ParagraphStyle("cb", parent=base["BodyText"], fontName="Helvetica-Bold", fontSize=9.5, leading=12),
+        "p": ParagraphStyle("p", parent=base["BodyText"], fontName="Helvetica", fontSize=S(10.5), leading=S(14), spaceAfter=S(6)),
+        "li": ParagraphStyle("li", parent=base["BodyText"], fontName="Helvetica", fontSize=S(10.5), leading=S(14),
+                             leftIndent=18, firstLineIndent=-10, spaceAfter=S(3)),
+        "cell": ParagraphStyle("c", parent=base["BodyText"], fontName="Helvetica", fontSize=S(9.5), leading=S(12)),
+        "cellb": ParagraphStyle("cb", parent=base["BodyText"], fontName="Helvetica-Bold", fontSize=S(9.5), leading=S(12)),
     }
     buf = io.BytesIO()
-    doc = SimpleDocTemplate(buf, pagesize=A4, leftMargin=2 * cm, rightMargin=2 * cm, topMargin=2 * cm,
-                            bottomMargin=2 * cm, title=_winansi(title), author=_winansi(author))
+    class _Doc(SimpleDocTemplate):
+        fill = 0.0
+
+        def afterFlowable(self, flowable):          # taux de remplissage de la page en cours (0 à 1)
+            frame = self.frame
+            used = (frame._y1 + frame._height - frame._topPadding) - frame._y
+            self.fill = max(0.0, min(1.0, used / frame._aH)) if frame._aH else 0.0
+
+    doc = _Doc(buf, pagesize=A4, leftMargin=2 * cm, rightMargin=2 * cm, topMargin=2 * cm,
+               bottomMargin=2 * cm, title=_winansi(title), author=_winansi(author))
     story = [] if theme == "cv" else [Paragraph(esc(title), st["title"])]
     for blk in blocks[:MAX_BLOCKS]:
         t = blk.get("type")
@@ -307,7 +336,55 @@ def pdf_bytes(title: str, blocks: list[dict], author: str = "CHARYAM", theme: st
         else:
             story.append(Paragraph(esc(blk.get("text", "")), st["p"]))
     doc.build(story)
-    return buf.getvalue()
+    return buf.getvalue(), doc.page, doc.fill
+
+
+# --------------------------------------------------------------------------- #
+# CV : ajustement automatique à 1 ou 2 pages
+# --------------------------------------------------------------------------- #
+CV_MIN_PERCENT, CV_MAX_PERCENT, CV_MAX_PAGES = 80, 115, 2   # échelle 0,80 à 1,15 (police environ 8,4 à 12 pt)
+
+
+def _largest_percent(blocks, title, max_pages: int):
+    """Plus grande échelle (en %) qui tient en `max_pages` pages ; None si même la plus petite déborde.
+    Le nombre de pages croît avec l'échelle : recherche par dichotomie."""
+    def pages(percent):
+        return _pdf_build(title, blocks, "CHARYAM", "cv", percent / 100)[1]
+
+    if pages(CV_MIN_PERCENT) > max_pages:
+        return None
+    lo, hi = CV_MIN_PERCENT, CV_MAX_PERCENT
+    while lo < hi:
+        mid = (lo + hi + 1) // 2
+        if pages(mid) <= max_pages:
+            lo = mid
+        else:
+            hi = mid - 1
+    return lo
+
+
+def cv_layout(blocks: list[dict], title: str = "CV") -> dict:
+    """Choisit l'échelle du CV pour qu'il remplisse sa ou ses pages, 2 pages au maximum.
+
+    Retourne {"scale", "pages", "fill", "overflow", "short"} :
+    - fill : taux de remplissage de la dernière page (0 à 1) ;
+    - overflow : même à la plus petite taille lisible, le CV dépasse 2 pages (à raccourcir) ;
+    - short : même agrandi au maximum, le CV ne remplit pas ses pages (manque de contenu)."""
+    def build(percent):
+        return _pdf_build(title, blocks, "CHARYAM", "cv", percent / 100)
+
+    one = _largest_percent(blocks, title, 1)
+    if one is not None and one >= 90:                  # 1 page pleine, sans réduire la taille de plus de 10 %
+        percent = one
+    else:
+        two = _largest_percent(blocks, title, CV_MAX_PAGES)
+        if two is None:
+            _, pages, fill = build(CV_MIN_PERCENT)
+            return {"scale": CV_MIN_PERCENT / 100, "pages": pages, "fill": fill, "overflow": True, "short": False}
+        percent = two
+    _, pages, fill = build(percent)
+    short = (pages == 1 and fill < 0.75) or (pages >= 2 and fill < 0.5)
+    return {"scale": percent / 100, "pages": pages, "fill": round(fill, 2), "overflow": False, "short": short}
 
 
 # --------------------------------------------------------------------------- #

@@ -97,6 +97,7 @@ executor = ThreadPoolExecutor(max_workers=WORKER_THREADS, thread_name_prefix="ch
 # Mémoire simple par chat (en RAM : perdue à chaque redémarrage)
 chat_memory = {}
 chat_modes = {}              # activité choisie dans le menu, par chat (perdue au redémarrage)
+last_layouts = {}            # mise en page du dernier CV exporté, par chat (pages, remplissage), pour la légende du fichier
 last_answers = {}            # dernière réponse de Claude, par chat, pour l'export Word/PDF (en RAM)
 LAST_ANSWERS_MAX = 200       # nombre maximal de chats gardés dans last_answers
 _chat_locks = {}
@@ -475,6 +476,9 @@ def build_export(chat_id: int, fmt: str):
     blocks = charyam_docs.markdown_to_blocks(prepare_for_export(text))
     if is_cv:
         title = "CV"
+        last_layouts[chat_id] = charyam_docs.cv_layout(blocks, title)
+    else:
+        last_layouts.pop(chat_id, None)
     theme = "cv" if is_cv else "doc"
     if fmt == "pdf":
         data = charyam_docs.pdf_bytes(title, blocks, theme=theme)
@@ -482,6 +486,22 @@ def build_export(chat_id: int, fmt: str):
         data = charyam_docs.docx_bytes(title, blocks, theme=theme)
     filename = charyam_docs.safe_filename(f"{title}_{time.strftime('%Y-%m-%d')}", fmt)
     return filename, data
+
+
+def export_caption(chat_id: int) -> str:
+    """Légende du fichier ; pour un CV, indique le nombre de pages et signale un CV trop long ou trop court."""
+    caption = "Fichier créé à partir de ma dernière réponse. Relis-le avant de l'utiliser."
+    layout = last_layouts.get(chat_id)
+    if not layout:
+        return caption
+    if layout["overflow"]:
+        return (caption + "\n⚠️ Ce CV dépasse 2 pages même en petits caractères : demande-moi de le raccourcir "
+                "(je garderai les réalisations les plus chiffrées).")
+    note = f"\nCV de {layout['pages']} page{'s' if layout['pages'] > 1 else ''}."
+    if layout["short"]:
+        note += (" Il est court pour remplir la page : ajoute des réalisations chiffrées (montants, pourcentages, "
+                 "nombre de personnes, délais) pour le renforcer.")
+    return caption + note
 
 
 def _handle_export(chat_id: int, fmt: str):
@@ -503,7 +523,7 @@ def _handle_export(chat_id: int, fmt: str):
     try:
         result = send_telegram_document(
             chat_id, filename, data, EXPORT_MIME[fmt],
-            caption="Fichier créé à partir de ma dernière réponse. Relis-le avant de l'utiliser.",
+            caption=export_caption(chat_id),
         )
     except Exception as e:
         logger.error("Erreur envoi fichier (%s): %s", type(e).__name__, redact(e))

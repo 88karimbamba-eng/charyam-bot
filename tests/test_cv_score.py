@@ -154,3 +154,85 @@ class PromptTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def _cv_blocks(n_exp, bullets):
+    import charyam_docs
+    md = "# Jean Test\nAbidjan | 01 02 03 04 05\n\n## Profil\nResponsable de portefeuille. " * 1 + "\n\n## Expérience professionnelle\n"
+    for i in range(n_exp):
+        md += f"### Poste {i + 1}, Employeur {i + 1} (20{10 + i} - 20{12 + i})\n"
+        md += "".join(f"- Réalisation {j + 1} : portefeuille de {100 + j} millions FCFA, recouvrement à {90 + j} % en douze mois\n"
+                       for j in range(bullets))
+    return charyam_docs.markdown_to_blocks(md)
+
+
+class PageFitTest(unittest.TestCase):
+    def layout(self, n, b):
+        import charyam_docs
+        return charyam_docs.cv_layout(_cv_blocks(n, b))
+
+    def test_cv_moyen_remplit_une_page(self):
+        layout = self.layout(3, 4)
+        self.assertEqual(layout["pages"], 1)
+        self.assertGreaterEqual(layout["fill"], 0.9)
+        self.assertFalse(layout["short"])
+
+    def test_cv_long_rentre_en_deux_pages_et_les_remplit(self):
+        layout = self.layout(5, 6)
+        self.assertEqual(layout["pages"], 2)
+        self.assertGreaterEqual(layout["fill"], 0.9)
+
+    def test_cv_trop_court_signale(self):
+        layout = self.layout(1, 2)
+        self.assertEqual(layout["pages"], 1)
+        self.assertTrue(layout["short"])
+        self.assertLess(layout["fill"], 0.75)
+
+    def test_cv_trop_long_signale_et_jamais_plus_petit_que_le_minimum(self):
+        layout = self.layout(14, 9)
+        self.assertTrue(layout["overflow"])
+        self.assertEqual(layout["scale"], 0.8)
+
+    def test_jamais_plus_de_deux_pages_quand_pas_de_debordement(self):
+        for n, b in [(1, 1), (2, 3), (3, 4), (4, 5), (5, 6), (5, 7), (6, 5)]:
+            layout = self.layout(n, b)
+            if not layout["overflow"]:
+                self.assertLessEqual(layout["pages"], 2, (n, b))
+            self.assertGreaterEqual(layout["scale"], 0.8)
+            self.assertLessEqual(layout["scale"], 1.15)
+
+    def test_le_pdf_exporte_a_le_nombre_de_pages_annonce(self):
+        import charyam_docs
+        from pypdf import PdfReader
+        for n, b in [(3, 4), (5, 6)]:
+            blocks = _cv_blocks(n, b)
+            data = charyam_docs.pdf_bytes("CV", blocks, theme="cv")
+            self.assertEqual(len(PdfReader(io.BytesIO(data)).pages), charyam_docs.cv_layout(blocks)["pages"])
+
+    def test_documents_non_cv_gardent_l_echelle_normale(self):
+        import charyam_docs
+        data = charyam_docs.docx_bytes("Devis", charyam_docs.markdown_to_blocks("# A\n\nTexte"))
+        with zipfile.ZipFile(io.BytesIO(data)) as z:
+            self.assertIn('w:val="21"', z.read("word/styles.xml").decode())
+
+
+class CaptionTest(unittest.TestCase):
+    def setUp(self):
+        bot.last_layouts.clear()
+
+    def test_legende_cv_une_page_pleine(self):
+        bot.last_layouts[1] = {"scale": 1.0, "pages": 1, "fill": 1.0, "overflow": False, "short": False}
+        text = bot.export_caption(1)
+        self.assertIn("CV de 1 page.", text)
+        self.assertNotIn("court", text)
+
+    def test_legende_cv_court(self):
+        bot.last_layouts[1] = {"scale": 1.15, "pages": 1, "fill": 0.5, "overflow": False, "short": True}
+        self.assertIn("réalisations chiffrées", bot.export_caption(1))
+
+    def test_legende_cv_trop_long(self):
+        bot.last_layouts[1] = {"scale": 0.8, "pages": 3, "fill": 0.2, "overflow": True, "short": False}
+        self.assertIn("dépasse 2 pages", bot.export_caption(1))
+
+    def test_legende_document_inchangee(self):
+        self.assertEqual(bot.export_caption(2), "Fichier créé à partir de ma dernière réponse. Relis-le avant de l'utiliser.")

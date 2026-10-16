@@ -153,6 +153,13 @@ TDR = "TERMES DE REFERENCE\n" + "\n".join(f"Article {i} : produire dix capsules 
 
 
 class PdfAndLinksTest(unittest.TestCase):
+    """Lecture de PDF : fonctionnalité conservée mais DÉSACTIVÉE par défaut (PDF_READING=1 pour l'activer)."""
+
+    def setUp(self):
+        patcher = mock.patch.dict("os.environ", {"PDF_READING": "1"})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
     def test_lecture_d_un_pdf(self):
         result = run(lambda r: pdf_response(make_pdf([TDR, "Date limite : 21 octobre 2026"])), url="https://offre.example/tdr.pdf")
         self.assertTrue(result.ok, result.text)
@@ -212,6 +219,65 @@ class PdfAndLinksTest(unittest.TestCase):
         result = run(handler, url="https://offre.example/tdr.pdf")
         self.assertFalse(result.ok)
         self.assertIn("refusée", result.text)
+
+
+class PdfDesactiveParDefautTest(unittest.TestCase):
+    def setUp(self):
+        patcher = mock.patch.dict("os.environ", {}, clear=False)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        import os
+        os.environ.pop("PDF_READING", None)
+
+    def test_pdf_direct_refuse_sans_telecharger_le_fichier(self):
+        streamed = []
+
+        class Body(httpx.SyncByteStream):
+            def __iter__(self):
+                streamed.append(True)
+                yield make_pdf([TDR])
+
+        def handler(request):
+            return httpx.Response(200, stream=Body(), headers={"content-type": "application/pdf"})
+
+        result = run(handler, url="https://offre.example/tdr.pdf")
+        self.assertFalse(result.ok)
+        self.assertIn("Je ne lis pas les PDF", result.text)
+        self.assertIn("coller", result.text)
+        self.assertTrue(result.meta["pdf"])
+        self.assertEqual(streamed, [])                        # le contenu n'a jamais été lu
+
+    def test_pdf_detecte_par_extension_sans_content_type(self):
+        result = run(lambda r: pdf_response(make_pdf([TDR]), kind="application/octet-stream"), url="https://offre.example/tdr.pdf")
+        self.assertFalse(result.ok)
+        self.assertIn("Je ne lis pas les PDF", result.text)
+
+    def test_page_avec_offre_directe_lue_normalement(self):
+        result = run(lambda r: html(OFFRE))
+        self.assertTrue(result.ok)
+        self.assertIn("Permis B", result.text)
+        self.assertNotIn("NON lus", result.text)               # pas de lien de document : aucune mention
+
+    def test_page_avec_pdf_lie_dit_qu_il_n_est_pas_lu(self):
+        page = OFFRE.replace("<h1>", '<a href="/pics/tdr.pdf">Télécharger le PDF</a><h1>')
+        result = run(lambda r: html(page))
+        self.assertTrue(result.ok)
+        self.assertIn("NON lus par ce bot", result.text)
+        self.assertIn("coller", result.text)
+        self.assertIn("ne devine jamais", result.text)
+        self.assertIn("https://offre.example/pics/tdr.pdf", result.text)
+
+    def test_le_secours_firecrawl_n_est_pas_utilise_pour_un_pdf(self):
+        from integrations import tool_router
+        from integrations.tool_router import ToolRouter
+        env = {"FIRECRAWL_API_KEY": "fc-TESTKEY1234567890"}
+        scrape = mock.patch.object(tool_router.firecrawl_client, "scrape").start()
+        self.addCleanup(mock.patch.stopall)
+        refused = web_reader.ToolResult.error(web_reader.PDF_REFUSED, pdf=True)
+        with mock.patch.object(tool_router.web_reader, "read", return_value=refused):
+            result = ToolRouter(env=env).execute("lire_page_web", {"url": "https://offre.example/tdr.pdf"})
+        self.assertFalse(result.ok)
+        scrape.assert_not_called()
 
 
 if __name__ == "__main__":

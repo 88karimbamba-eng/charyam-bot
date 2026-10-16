@@ -62,10 +62,11 @@ def _tool_defs(env=None) -> dict:
     defs["lire_page_web"] = {
         "name": "lire_page_web",
         "description": (
-            "Lit le contenu principal d'UNE page web ou d'UN document PDF public à partir de son URL (offre d'emploi, "
-            "appel d'offres, termes de référence, fiche produit, site d'un client…). Si la page cite un document "
-            "lié (PDF), lis-le aussi quand la demande l'exige. Si la lecture échoue (page protégée par connexion ou chargée en JavaScript), "
-            "le dis clairement à l'utilisateur et demande-lui de coller le texte."
+            "Lit le contenu principal d'UNE page web à partir de son URL (offre d'emploi, appel d'offres, "
+            "fiche produit, site d'un client…). Les PDF ne sont PAS lus : si le lien est un PDF, ou si l'offre "
+            "complète n'est que dans un PDF lié, dis-le simplement à l'utilisateur et demande-lui de copier le "
+            "texte du document et de le coller dans le message. Si la lecture échoue (page protégée par "
+            "connexion ou chargée en JavaScript), dis-le aussi et demande-lui de coller le texte."
         ),
         "input_schema": {
             "type": "object",
@@ -179,7 +180,8 @@ class ToolRouter:
         if name == "lire_page_web":
             url = str(args.get("url", ""))
             result = web_reader.read(url, env=env)
-            if not result.ok and firecrawl_client.is_configured(env) and not result.text.startswith("URL refusée"):
+            if (not result.ok and firecrawl_client.is_configured(env)
+                    and not result.meta.get("pdf") and not result.text.startswith("URL refusée")):
                 return firecrawl_client.scrape(url, env=env)   # secours pour pages dynamiques
             return result
         if name == "explorer_site_web":

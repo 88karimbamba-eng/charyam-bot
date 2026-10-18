@@ -36,6 +36,7 @@ from flask import Flask, request, jsonify
 
 import access
 import charyam_docs
+import store as store_module
 from integrations.common import redact_secrets
 from integrations.tool_router import ToolRouter, complete_with_tools
 
@@ -83,8 +84,12 @@ KNOWN_FIRST_NAMES = {
     USER_ID: "Karim",
 }
 
+# Stockage persistant facultatif (Upstash) : sans ses deux variables, tout reste en mémoire locale
+UPSTASH_TOKEN = os.environ.get("UPSTASH_REDIS_REST_TOKEN", "").strip()
+persistent_store = store_module.make_store()
+
 # Testeurs autorisés (variable ALLOWED_USER_IDS) et limite de messages par utilisateur
-access_control = access.AccessControl(USER_ID)
+access_control = access.AccessControl(USER_ID, store=persistent_store)
 
 # Validation au démarrage
 if not TELEGRAM_TOKEN:
@@ -103,7 +108,8 @@ client = anthropic.Anthropic(
 telegram_http = httpx.Client(timeout=httpx.Timeout(20.0, connect=10.0))
 executor = ThreadPoolExecutor(max_workers=WORKER_THREADS, thread_name_prefix="charyam")
 
-# Mémoire simple par chat (en RAM : perdue à chaque redémarrage)
+# Mémoire par chat : cache local en RAM (perdu à chaque redémarrage). Si le stockage persistant est
+# configuré, la conversation y est aussi sauvegardée (7 jours) et rechargée après un redémarrage.
 chat_memory = {}
 chat_modes = {}              # activité choisie dans le menu, par chat (perdue au redémarrage)
 last_answers = {}            # dernière réponse de Claude, par chat, pour l'export Word/PDF (en RAM)
@@ -118,7 +124,7 @@ _thinking_rejected = False   # vrai si l'API a refusé le réglage CLAUDE_THINKI
 def redact(value) -> str:
     """Masque les secrets avant d'écrire quoi que ce soit dans les journaux"""
     text = str(value)
-    for secret in (TELEGRAM_TOKEN, CLAUDE_API_KEY, WEBHOOK_SECRET):
+    for secret in (TELEGRAM_TOKEN, CLAUDE_API_KEY, WEBHOOK_SECRET, UPSTASH_TOKEN):
         if secret:
             text = text.replace(secret, "***")
     return redact_secrets(text)
@@ -295,8 +301,9 @@ HELP_TEXT = (
     "[à compléter].\n"
     "• Après une réponse, touche ⬇️ Word ou ⬇️ PDF pour la recevoir en fichier "
     "(le fichier contient ma dernière réponse, à relire avant usage).\n"
-    "• Je ne retiens que la conversation en cours, et je peux l'oublier après un redémarrage.\n\n"
-    "Commandes : /menu pour afficher le menu, /aide pour ce message."
+    "• Je ne retiens que la conversation en cours. Selon la configuration du service, je peux "
+    "l'oublier après un redémarrage ; /oubli l'efface quand tu veux.\n\n"
+    "Commandes : /menu pour afficher le menu, /aide pour ce message, /oubli pour effacer la conversation."
 )
 
 MODE_SELECTED_TEXT = {
@@ -313,7 +320,13 @@ MODE_SELECTED_TEXT = {
 }
 
 
-MENU_COMMANDS = ("/start", "/menu", "/aide", "/help", "/outils")
+MENU_COMMANDS = ("/start", "/menu", "/aide", "/help", "/outils", "/oubli")
+
+FORGET_DONE_TEXT = "C'est fait : j'ai effacé notre conversation et ma dernière réponse."
+FORGET_PARTIAL_TEXT = (
+    "J'ai effacé la conversation sur ce service, mais je n'ai pas pu confirmer l'effacement de la copie "
+    "sauvegardée. Réessaie /oubli dans quelques minutes."
+)
 
 UNKNOWN_COMMAND_TEXT = "Commande inconnue. Touche /menu pour voir les choix, ou écris simplement ta demande."
 
@@ -381,6 +394,11 @@ def handle_menu(chat_id: int, text: str):
         return HELP_TEXT, MENU_KEYBOARD
     if command == "/outils":
         return tools_status_text(), MENU_KEYBOARD
+    if command == "/oubli":
+        last_answers.pop(chat_id, None)
+        if _clear_history(chat_id):
+            return FORGET_DONE_TEXT, MENU_KEYBOARD
+        return FORGET_PARTIAL_TEXT, MENU_KEYBOARD
     mode = BUTTON_MODES.get(text.strip())
     if mode:
         chat_modes[chat_id] = mode
@@ -763,11 +781,51 @@ def _user_error_message(exc: Exception) -> str:
     )
 
 
+def _load_history(chat_id: int) -> list:
+    """Historique du chat : le cache local d'abord (toujours au moins aussi récent dans ce processus),
+    sinon le stockage persistant. Une panne du stockage n'interrompt jamais la conversation."""
+    local = chat_memory.get(chat_id)
+    if local:
+        return local
+    if persistent_store is not None:
+        try:
+            saved = persistent_store.get_history(chat_id)
+        except store_module.StoreError as exc:
+            logger.warning("Mémoire persistante illisible, conversation locale utilisée (%s)", exc)
+            return []
+        if saved:
+            chat_memory[chat_id] = saved
+            return saved
+    return []
+
+
+def _save_history(chat_id: int, messages: list):
+    """Sauvegarde dans le cache local, puis dans le stockage persistant s'il existe (échec journalisé)."""
+    chat_memory[chat_id] = messages
+    if persistent_store is not None:
+        try:
+            persistent_store.set_history(chat_id, messages)
+        except store_module.StoreError as exc:
+            logger.warning("Mémoire persistante non sauvegardée, copie locale conservée (%s)", exc)
+
+
+def _clear_history(chat_id: int) -> bool:
+    """Efface la conversation partout. Retourne False si la copie persistante n'a pas pu être effacée."""
+    chat_memory.pop(chat_id, None)
+    if persistent_store is not None:
+        try:
+            persistent_store.delete_history(chat_id)
+        except store_module.StoreError as exc:
+            logger.warning("Effacement de la mémoire persistante impossible (%s)", exc)
+            return False
+    return True
+
+
 def get_claude_response(user_id: int, chat_id: int, user_message: str, first_name: str = "") -> str:
     """Obtient une réponse de Claude avec mémoire du chat.
     La mémoire n'est modifiée qu'après une réponse réussie."""
     messages = clean_history(
-        chat_memory.get(chat_id, []) + [{"role": "user", "content": user_message}]
+        _load_history(chat_id) + [{"role": "user", "content": user_message}]
     )
     system = build_system_prompt(first_name, chat_modes.get(chat_id))
 
@@ -795,7 +853,7 @@ def get_claude_response(user_id: int, chat_id: int, user_message: str, first_nam
             return "Je n'ai pas réussi à formuler de réponse. Reformule ta demande, s'il te plaît."
 
         # Mémoire : uniquement du texte, jamais de blocs « thinking »
-        chat_memory[chat_id] = trim_history(messages + [{"role": "assistant", "content": text}])
+        _save_history(chat_id, trim_history(messages + [{"role": "assistant", "content": text}]))
         _remember_answer(
             chat_id,
             text + ("\n\n[Réponse incomplète : limite de longueur atteinte.]" if stop_reason == "max_tokens" else ""),
@@ -813,7 +871,7 @@ def get_claude_response(user_id: int, chat_id: int, user_message: str, first_nam
         logger.error("Détail: %s", redact(traceback.format_exc()))
         if isinstance(e, anthropic.BadRequestError):
             # Requête refusée : on repart d'un historique vide pour ne pas bloquer les messages suivants
-            chat_memory.pop(chat_id, None)
+            _clear_history(chat_id)
             logger.warning("Historique du chat %s réinitialisé après une requête refusée", chat_id)
         return _user_error_message(e)
 

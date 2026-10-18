@@ -552,7 +552,8 @@ def _configure_webhook():
             result = tg_call("setWebhook", payload)
             if result.get("ok"):
                 _secret_active = bool(WEBHOOK_SECRET)
-                logger.info("✅ Webhook configuré: %s", WEBHOOK_URL)
+                logger.info("✅ Webhook configuré: %s (secret enregistré chez Telegram : %s)",
+                            WEBHOOK_URL, "oui" if _secret_active else "non")
                 _log_webhook_status()
                 return
             logger.error("❌ Erreur webhook (tentative %s/3): %s", attempt, redact(result))
@@ -566,8 +567,17 @@ def _configure_webhook():
     logger.error("❌ Webhook non configuré après 3 tentatives (celui déjà enregistré reste actif)")
 
 
+def log_secret_diagnostic():
+    """Journalise UNIQUEMENT si le secret du webhook est présent et non vide, jamais sa valeur ni sa longueur."""
+    if WEBHOOK_SECRET:
+        logger.info("Secret du webhook : présent et non vide (contrôle de l'en-tête exigé sur /webhook)")
+    else:
+        logger.warning("Secret du webhook : ABSENT ou vide (TELEGRAM_WEBHOOK_SECRET) : /webhook n'authentifie PAS Telegram")
+
+
 def setup_webhook():
     """Lance la configuration du webhook en arrière-plan : ne bloque pas le démarrage de Gunicorn"""
+    log_secret_diagnostic()
     threading.Thread(target=_configure_webhook, name="setup-webhook", daemon=True).start()
 
 
@@ -871,7 +881,9 @@ def process_message(user_id: int, chat_id: int, text: str, message_id: int):
 @app.route("/webhook", methods=["POST"])
 def webhook():
     """Reçoit les mises à jour Telegram et répond tout de suite (le travail se fait en arrière-plan)"""
-    if _secret_active:
+    # Dès qu'un secret est configuré, il est EXIGÉ, même si son enregistrement chez Telegram n'a pas
+    # (encore) réussi : mieux vaut refuser que laisser passer une requête non authentifiée.
+    if WEBHOOK_SECRET or _secret_active:
         received = request.headers.get("X-Telegram-Bot-Api-Secret-Token", "")
         if not hmac.compare_digest(received.encode("utf-8"), WEBHOOK_SECRET.encode("utf-8")):
             logger.warning("Webhook refusé: jeton secret invalide")

@@ -98,6 +98,23 @@ class UpstashStore:
     def delete_history(self, chat_id):
         self._command("DEL", history_key(chat_id))
 
+    # ---- Commandes (Chariow) ------------------------------------------------------------------
+    def claim(self, key: str, ttl_seconds: int) -> bool:
+        """Réserve une clé (SET NX EX). True si elle vient d'être créée, False si elle existait déjà."""
+        return self._command("SET", key, "1", "EX", int(ttl_seconds), "NX") == "OK"
+
+    def put_json(self, key: str, data, ttl_seconds: int):
+        self._command("SET", key, json.dumps(data, ensure_ascii=False), "EX", int(ttl_seconds))
+
+    def get_json(self, key: str):
+        raw = self._command("GET", key)
+        if raw is None:
+            return None
+        try:
+            return json.loads(raw)
+        except (TypeError, ValueError):
+            return None
+
     # ---- Quotas -------------------------------------------------------------------------------
     def incr_with_ttl(self, key: str, ttl_seconds: int) -> int:
         """Incrémente un compteur et fixe son expiration à la création. Renvoie la nouvelle valeur."""
@@ -117,6 +134,8 @@ class FakeStore:
         self.counters = {}
         self.ttls = {}
         self.down = False
+        self.claimed = set()
+        self.json_data = {}
 
     def _check(self):
         if self.down:
@@ -134,6 +153,22 @@ class FakeStore:
     def delete_history(self, chat_id):
         self._check()
         self.histories.pop(history_key(chat_id), None)
+
+    def claim(self, key, ttl_seconds):
+        self._check()
+        if key in self.claimed:
+            return False
+        self.claimed.add(key)
+        return True
+
+    def put_json(self, key, data, ttl_seconds):
+        self._check()
+        self.json_data[key] = json.loads(json.dumps(data))
+
+    def get_json(self, key):
+        self._check()
+        value = self.json_data.get(key)
+        return None if value is None else json.loads(json.dumps(value))
 
     def incr_with_ttl(self, key, ttl_seconds):
         self._check()

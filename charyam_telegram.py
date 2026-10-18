@@ -37,6 +37,7 @@ from flask import Flask, request, jsonify
 import access
 import charyam_docs
 import store as store_module
+import chariow
 from integrations.common import redact_secrets
 from integrations.tool_router import ToolRouter, complete_with_tools
 
@@ -85,6 +86,7 @@ KNOWN_FIRST_NAMES = {
 }
 
 # Stockage persistant facultatif (Upstash) : sans ses deux variables, tout reste en mémoire locale
+CHARIOW_PULSE_SECRET = os.environ.get("CHARIOW_PULSE_SECRET", "").strip()
 UPSTASH_TOKEN = os.environ.get("UPSTASH_REDIS_REST_TOKEN", "").strip()
 persistent_store = store_module.make_store()
 
@@ -124,7 +126,7 @@ _thinking_rejected = False   # vrai si l'API a refusé le réglage CLAUDE_THINKI
 def redact(value) -> str:
     """Masque les secrets avant d'écrire quoi que ce soit dans les journaux"""
     text = str(value)
-    for secret in (TELEGRAM_TOKEN, CLAUDE_API_KEY, WEBHOOK_SECRET, UPSTASH_TOKEN):
+    for secret in (TELEGRAM_TOKEN, CLAUDE_API_KEY, WEBHOOK_SECRET, UPSTASH_TOKEN, CHARIOW_PULSE_SECRET):
         if secret:
             text = text.replace(secret, "***")
     return redact_secrets(text)
@@ -1023,6 +1025,47 @@ def webhook():
     except Exception as e:
         logger.error("Erreur webhook (%s): %s", type(e).__name__, redact(e))
         return jsonify({"ok": True})
+
+
+_chariow_seen = set()
+
+
+def _notify_owner(text: str):
+    try:
+        send_telegram_message(USER_ID, text)
+    except Exception as e:
+        logger.error("Notification propriétaire impossible (%s)", type(e).__name__)
+
+
+def _notify_async(text: str):
+    executor.submit(_notify_owner, text)
+
+
+@app.route("/webhooks/chariow", methods=["POST"])
+def chariow_webhook():
+    """Reçoit les Pulses Chariow. Signature obligatoire ; sans secret configuré, la route refuse tout (503)."""
+    if not CHARIOW_PULSE_SECRET:
+        logger.error("Pulse Chariow refusé : CHARIOW_PULSE_SECRET non défini")
+        return "", 503
+    raw = request.get_data()
+    if not chariow.verify_signature(raw, request.headers.get("X-Chariow-Signature", ""), CHARIOW_PULSE_SECRET):
+        logger.warning("Pulse Chariow refusé : signature invalide")
+        return "", 401
+    delivery_id = request.headers.get("X-Pulse-Delivery-Id", "")
+    event = request.headers.get("X-Pulse-Event", "")
+    payload = request.get_json(silent=True, force=True)
+    if not delivery_id or not isinstance(payload, dict):
+        return "", 400
+    try:
+        result = chariow.process(persistent_store, event, payload, delivery_id, _notify_async, _chariow_seen)
+    except store_module.StoreError:
+        logger.error("Pulse Chariow %s : stockage indisponible, Chariow réessaiera", event)
+        return "", 503
+    except ValueError:
+        logger.warning("Pulse Chariow %s : charge utile invalide", event)
+        return "", 400
+    logger.info("Pulse Chariow %s traité : %s", event, result)
+    return "OK", 200
 
 
 @app.route("/", methods=["GET"])

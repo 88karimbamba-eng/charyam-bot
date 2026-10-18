@@ -5,17 +5,25 @@ ALLOWED_USER_IDS (séparés par des virgules) peuvent parler au bot. Chaque test
 nombre de messages par minute et par jour, pour maîtriser le coût de l'API Anthropic. Le
 propriétaire n'est jamais limité.
 
-Limites connues : les compteurs sont en mémoire (remis à zéro au redémarrage du service, ce qui
-arrive après environ 15 minutes d'inactivité sur le plan gratuit de Render). La limite protège donc
-d'un emballement, pas d'un abus déterminé : le plafond de dépense du compte Anthropic reste
-indispensable.
+Compteurs : en mémoire par défaut (remis à zéro au redémarrage du service, ce qui arrive après
+environ 15 minutes d'inactivité sur le plan gratuit de Render). Si un stockage persistant est fourni
+(store.py, Upstash), les compteurs y sont conservés : fenêtres fixes d'une minute et d'un jour (UTC).
+Si ce stockage est indisponible, les messages des testeurs sont REFUSÉS avec un message clair (jamais
+de désactivation silencieuse de la limite) ; le propriétaire n'est jamais limité.
+
+Dans tous les cas, le plafond de dépense du compte Anthropic reste indispensable.
 """
 
+import logging
 import os
 import re
 import threading
 import time
 from collections import OrderedDict, deque
+
+import store as store_module
+
+logger = logging.getLogger("charyam")
 
 DEFAULT_PER_MINUTE = 6
 DEFAULT_PER_DAY = 60
@@ -43,9 +51,10 @@ def _int_env(name: str, default: int, env=None) -> int:
 
 
 class AccessControl:
-    def __init__(self, owner_id: int, env=None):
+    def __init__(self, owner_id: int, env=None, store=None):
         source = os.environ if env is None else env
         self.owner_id = owner_id
+        self.store = store
         self.allowed = parse_allowed_ids(source.get("ALLOWED_USER_IDS", ""), owner_id)
         self.per_minute = _int_env("USER_MESSAGES_PER_MINUTE", DEFAULT_PER_MINUTE, source)
         self.per_day = _int_env("USER_MESSAGES_PER_DAY", DEFAULT_PER_DAY, source)
@@ -65,6 +74,8 @@ class AccessControl:
         if self.is_owner(user_id):
             return True, ""
         now = time.time() if now is None else now
+        if self.store is not None:
+            return self._check_rate_persistent(user_id, now)
         with self._lock:
             hits = self._hits.get(user_id)
             if hits is None:
@@ -82,6 +93,25 @@ class AccessControl:
             while len(self._hits) > MAX_TRACKED_USERS:
                 self._hits.popitem(last=False)
             return True, ""
+
+    def _check_rate_persistent(self, user_id: int, now: float):
+        """Compteurs dans le stockage persistant. La minute est vérifiée avant le jour, pour qu'un
+        message refusé à la minute ne consomme pas le quota du jour."""
+        try:
+            minute_count = self.store.incr_with_ttl(
+                store_module.quota_key("min", user_id, int(now // 60)), 120
+            )
+            if minute_count > self.per_minute:
+                return False, "minute"
+            day_count = self.store.incr_with_ttl(
+                store_module.quota_key("day", user_id, int(now // 86400)), 90000
+            )
+            if day_count > self.per_day:
+                return False, "jour"
+            return True, ""
+        except store_module.StoreError as exc:
+            logger.error("Quotas : stockage indisponible, message refusé (%s)", exc)
+            return False, "indisponible"
 
     def should_notify(self, user_id, kind: str, now: float = None) -> bool:
         """Vrai si on peut envoyer ce message d'information (évite de répondre en boucle)."""
@@ -107,6 +137,8 @@ def refusal_text(user_id) -> str:
 
 
 def rate_limit_text(kind: str) -> str:
+    if kind == "indisponible":
+        return "Le service est momentanément indisponible. Réessaie dans quelques minutes."
     if kind == "jour":
         return "Tu as atteint la limite de messages pour aujourd'hui. Réessaie demain."
     return "Tu écris trop vite. Attends une minute puis réessaie."

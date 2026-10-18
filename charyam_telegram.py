@@ -66,6 +66,10 @@ WEBHOOK_URL = (
     or (os.environ.get("RENDER_EXTERNAL_URL") or "https://charyam-bot.onrender.com").rstrip("/") + "/webhook"
 )
 WEBHOOK_SECRET = os.environ.get("TELEGRAM_WEBHOOK_SECRET", "").strip()
+# Production = Render (variable RENDER=true posée par la plateforme) ou CHARYAM_ENV=production.
+# En production le secret du webhook est OBLIGATOIRE : sans lui, /webhook refuse tout (503).
+IS_PRODUCTION = (os.environ.get("RENDER", "").strip().lower() == "true"
+                 or os.environ.get("CHARYAM_ENV", "").strip().lower() == "production")
 
 MAX_HISTORY_MESSAGES = 20      # nombre maximal de messages gardés par conversation
 MAX_HISTORY_CHARS = 30000      # taille maximale cumulée de l'historique
@@ -571,8 +575,12 @@ def log_secret_diagnostic():
     """Journalise UNIQUEMENT si le secret du webhook est présent et non vide, jamais sa valeur ni sa longueur."""
     if WEBHOOK_SECRET:
         logger.info("Secret du webhook : présent et non vide (contrôle de l'en-tête exigé sur /webhook)")
+    elif IS_PRODUCTION:
+        logger.critical("Secret du webhook : ABSENT ou vide en PRODUCTION (TELEGRAM_WEBHOOK_SECRET) : "
+                        "/webhook refuse toutes les requêtes (503) tant qu'il n'est pas défini")
     else:
-        logger.warning("Secret du webhook : ABSENT ou vide (TELEGRAM_WEBHOOK_SECRET) : /webhook n'authentifie PAS Telegram")
+        logger.warning("Secret du webhook : ABSENT ou vide (TELEGRAM_WEBHOOK_SECRET), hors production : "
+                       "/webhook n'authentifie PAS Telegram")
 
 
 def setup_webhook():
@@ -878,16 +886,34 @@ def process_message(user_id: int, chat_id: int, text: str, message_id: int):
             logger.error("Erreur envoi réponse (%s): %s", type(e).__name__, redact(e))
 
 
+def webhook_auth(received: str, secret: str, production: bool) -> str:
+    """Décide si une requête /webhook est authentifiée. Retourne :
+    - « accepte »      : secret configuré et en-tête identique (comparaison en temps constant) ;
+    - « refuse »       : secret configuré mais en-tête absent, vide ou différent ;
+    - « mal_configure » : production SANS secret : tout est refusé (jamais de fail-open en production) ;
+    - « ouvert_dev »   : hors production et sans secret : contrôle désactivé (poste de développement, tests).
+    Un secret vide n'est jamais comparé : hmac.compare_digest(b"", b"") serait vrai."""
+    secret = (secret or "").strip()
+    if not secret:
+        return "mal_configure" if production else "ouvert_dev"
+    received = received or ""
+    if hmac.compare_digest(received.encode("utf-8"), secret.encode("utf-8")):
+        return "accepte"
+    return "refuse"
+
+
 @app.route("/webhook", methods=["POST"])
 def webhook():
     """Reçoit les mises à jour Telegram et répond tout de suite (le travail se fait en arrière-plan)"""
-    # Dès qu'un secret est configuré, il est EXIGÉ, même si son enregistrement chez Telegram n'a pas
-    # (encore) réussi : mieux vaut refuser que laisser passer une requête non authentifiée.
-    if WEBHOOK_SECRET or _secret_active:
-        received = request.headers.get("X-Telegram-Bot-Api-Secret-Token", "")
-        if not hmac.compare_digest(received.encode("utf-8"), WEBHOOK_SECRET.encode("utf-8")):
-            logger.warning("Webhook refusé: jeton secret invalide")
-            return jsonify({"ok": False}), 403
+    # Authentification AVANT tout traitement. Secret configuré : exigé, même si son enregistrement chez
+    # Telegram n'a pas (encore) réussi. Production sans secret : tout est refusé (503), jamais de fail-open.
+    verdict = webhook_auth(request.headers.get("X-Telegram-Bot-Api-Secret-Token", ""), WEBHOOK_SECRET, IS_PRODUCTION)
+    if verdict == "mal_configure":
+        logger.error("Webhook refusé: TELEGRAM_WEBHOOK_SECRET absent ou vide en production (service fermé)")
+        return jsonify({"ok": False}), 503
+    if verdict == "refuse":
+        logger.warning("Webhook refusé: jeton secret invalide")
+        return jsonify({"ok": False}), 403
 
     try:
         update = request.get_json(silent=True)

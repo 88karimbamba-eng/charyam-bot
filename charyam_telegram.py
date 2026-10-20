@@ -36,6 +36,7 @@ from flask import Flask, request, jsonify
 
 import access
 import charyam_docs
+import cv_questionnaire
 import store as store_module
 from integrations.common import redact_secrets
 from integrations.tool_router import ToolRouter, complete_with_tools
@@ -90,6 +91,9 @@ persistent_store = store_module.make_store()
 
 # Testeurs autorisés (variable ALLOWED_USER_IDS) et limite de messages par utilisateur
 access_control = access.AccessControl(USER_ID, store=persistent_store)
+
+# Questionnaire « CV intelligent » : progression par chat (mémoire locale + stockage persistant si présent)
+cv_flow = cv_questionnaire.CvFlow(persistent_store)
 
 # Validation au démarrage
 if not TELEGRAM_TOKEN:
@@ -226,6 +230,7 @@ MODE_DOCUMENTS = "documents"
 
 BUTTON_EMPLOI = "💼 Emploi & Candidatures"
 BUTTON_DOCUMENTS = "📄 Documents professionnels"
+BUTTON_CV = "📝 CV intelligent"
 BUTTON_AIDE = "❓ Aide"
 BUTTON_WORD = "⬇️ Word"
 BUTTON_PDF = "⬇️ PDF"
@@ -241,6 +246,7 @@ BUTTON_MODES = {
 # ce qui fonctionne avec allowed_updates=["message"] (pas de callback_query à gérer).
 MENU_KEYBOARD = {
     "keyboard": [
+        [{"text": BUTTON_CV}],
         [{"text": BUTTON_EMPLOI}],
         [{"text": BUTTON_DOCUMENTS}],
         [{"text": BUTTON_WORD}, {"text": BUTTON_PDF}],
@@ -302,6 +308,7 @@ MODE_RULE = (
 
 MENU_TEXT = (
     "Choisis une activité dans le menu ci-dessous, ou écris simplement ta question.\n\n"
+    f"{BUTTON_CV} : je te pose 8 questions, une à la fois, puis je rédige ton CV (Word/PDF).\n"
     f"{BUTTON_EMPLOI} : analyse d'offre, CV, lettre, email de candidature, entretien.\n"
     f"{BUTTON_DOCUMENTS} : courrier, devis, facture, compte rendu, rapport.\n\n"
     f"{BUTTON_WORD} ou {BUTTON_PDF} : recevoir ma dernière réponse en fichier."
@@ -317,7 +324,8 @@ HELP_TEXT = (
     "(le fichier contient ma dernière réponse, à relire avant usage).\n"
     "• Je ne retiens que la conversation en cours. Selon la configuration du service, je peux "
     "l'oublier après un redémarrage ; /oubli l'efface quand tu veux.\n\n"
-    "Commandes : /menu pour afficher le menu, /aide pour ce message, /oubli pour effacer la conversation."
+    "Commandes : /menu pour afficher le menu, /aide pour ce message, /cv pour le questionnaire CV, "
+    "/oubli pour effacer la conversation."
 )
 
 MODE_SELECTED_TEXT = {
@@ -334,7 +342,8 @@ MODE_SELECTED_TEXT = {
 }
 
 
-MENU_COMMANDS = ("/start", "/menu", "/aide", "/help", "/outils", "/oubli")
+MENU_COMMANDS = ("/start", "/menu", "/aide", "/help", "/outils", "/oubli",
+                 cv_questionnaire.COMMAND_START, cv_questionnaire.COMMAND_CANCEL, cv_questionnaire.COMMAND_SKIP)
 
 FORGET_DONE_TEXT = "C'est fait : j'ai effacé notre conversation et ma dernière réponse."
 FORGET_PARTIAL_TEXT = (
@@ -459,6 +468,44 @@ def tools_status_text() -> str:
     return "\n".join(lines)
 
 
+NO_CV_FLOW_TEXT = "Aucun questionnaire CV en cours. Touche 📝 CV intelligent pour en commencer un."
+
+
+def handle_cv_flow(chat_id: int, text: str):
+    """Questionnaire « CV intelligent ». Retourne None si le message n'est pas pour lui, sinon
+    (texte à envoyer, clavier, message à donner à Claude ou None). Claude n'est appelé qu'à la fin."""
+    stripped = text.strip()
+    command = stripped.split()[0].split("@")[0].lower() if stripped.startswith("/") else ""
+
+    if command == cv_questionnaire.COMMAND_START or stripped == BUTTON_CV:
+        chat_modes[chat_id] = MODE_EMPLOI
+        return cv_flow.start(chat_id), MENU_KEYBOARD, None
+
+    if command == cv_questionnaire.COMMAND_CANCEL:
+        if not cv_flow.is_active(chat_id):
+            return NO_CV_FLOW_TEXT, MENU_KEYBOARD, None
+        return cv_flow.cancel(chat_id), MENU_KEYBOARD, None
+
+    if command == cv_questionnaire.COMMAND_SKIP:
+        status, reply, answers = cv_flow.skip(chat_id)
+    elif (
+        not command
+        and stripped not in BUTTON_MODES
+        and stripped != BUTTON_AIDE
+        and cv_flow.is_active(chat_id)
+    ):
+        status, reply, answers = cv_flow.answer(chat_id, text)
+    else:
+        return None
+
+    if status == "none":
+        return NO_CV_FLOW_TEXT, MENU_KEYBOARD, None
+    if status == "done":
+        chat_modes[chat_id] = MODE_EMPLOI
+        return reply, MENU_KEYBOARD, cv_questionnaire.build_generation_prompt(answers)
+    return reply, MENU_KEYBOARD, None
+
+
 def handle_menu(chat_id: int, text: str):
     """Traite les commandes et les boutons du menu sans appeler Claude.
     Retourne (texte, clavier) si le message est géré ici, sinon None."""
@@ -471,7 +518,8 @@ def handle_menu(chat_id: int, text: str):
         return tools_status_text(), MENU_KEYBOARD
     if command == "/oubli":
         last_answers.pop(chat_id, None)
-        if _clear_history(chat_id):
+        cv_cleared = cv_flow.clear(chat_id)
+        if _clear_history(chat_id) and cv_cleared:
             return FORGET_DONE_TEXT, MENU_KEYBOARD
         return FORGET_PARTIAL_TEXT, MENU_KEYBOARD
     mode = BUTTON_MODES.get(text.strip())
@@ -1013,14 +1061,26 @@ def process_message(user_id: int, chat_id: int, text: str, message_id: int):
                 logger.error("Erreur export (%s): %s", type(e).__name__, redact(e))
             return
 
-        menu_reply = handle_menu(chat_id, text)
-        if menu_reply:
-            reply_text, keyboard = menu_reply
+        cv_reply = handle_cv_flow(chat_id, text)
+        if cv_reply is not None:
+            reply_text, keyboard, claude_input = cv_reply
             try:
                 send_telegram_message(chat_id, reply_text, reply_markup=keyboard)
             except Exception as e:
-                logger.error("Erreur envoi menu (%s): %s", type(e).__name__, redact(e))
-            return
+                logger.error("Erreur envoi questionnaire (%s): %s", type(e).__name__, redact(e))
+            if claude_input is None:
+                return
+            text = claude_input          # questionnaire terminé : Claude rédige le CV
+            message_id = None
+        else:
+            menu_reply = handle_menu(chat_id, text)
+            if menu_reply:
+                reply_text, keyboard = menu_reply
+                try:
+                    send_telegram_message(chat_id, reply_text, reply_markup=keyboard)
+                except Exception as e:
+                    logger.error("Erreur envoi menu (%s): %s", type(e).__name__, redact(e))
+                return
 
         stop_typing = threading.Event()
         threading.Thread(

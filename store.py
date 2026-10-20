@@ -33,6 +33,10 @@ def history_key(chat_id) -> str:
     return f"charyam:hist:{int(chat_id)}"
 
 
+def state_key(chat_id) -> str:
+    return f"charyam:cv:{int(chat_id)}"
+
+
 def quota_key(kind: str, user_id, window) -> str:
     return f"charyam:q:{kind}:{int(user_id)}:{int(window)}"
 
@@ -98,6 +102,26 @@ class UpstashStore:
     def delete_history(self, chat_id):
         self._command("DEL", history_key(chat_id))
 
+    # ---- Progression du questionnaire CV (un petit dictionnaire JSON par chat) -----------------
+    def get_state(self, chat_id):
+        raw = self._command("GET", state_key(chat_id))
+        if raw is None:
+            return None
+        try:
+            data = json.loads(raw)
+        except (TypeError, ValueError):
+            return None
+        return data if isinstance(data, dict) else None
+
+    def set_state(self, chat_id, state):
+        payload = json.dumps(state, ensure_ascii=False)
+        if len(payload.encode("utf-8")) > MAX_STORED_HISTORY_BYTES:
+            raise StoreError("Progression trop volumineuse pour le stockage")
+        self._command("SET", state_key(chat_id), payload, "EX", HISTORY_TTL_SECONDS)
+
+    def delete_state(self, chat_id):
+        self._command("DEL", state_key(chat_id))
+
     # ---- Quotas -------------------------------------------------------------------------------
     def incr_with_ttl(self, key: str, ttl_seconds: int) -> int:
         """Incrémente un compteur et fixe son expiration à la création. Renvoie la nouvelle valeur."""
@@ -114,6 +138,7 @@ class FakeStore:
 
     def __init__(self):
         self.histories = {}
+        self.states = {}
         self.counters = {}
         self.ttls = {}
         self.down = False
@@ -134,6 +159,19 @@ class FakeStore:
     def delete_history(self, chat_id):
         self._check()
         self.histories.pop(history_key(chat_id), None)
+
+    def get_state(self, chat_id):
+        self._check()
+        value = self.states.get(state_key(chat_id))
+        return None if value is None else json.loads(json.dumps(value))
+
+    def set_state(self, chat_id, state):
+        self._check()
+        self.states[state_key(chat_id)] = json.loads(json.dumps(state))
+
+    def delete_state(self, chat_id):
+        self._check()
+        self.states.pop(state_key(chat_id), None)
 
     def incr_with_ttl(self, key, ttl_seconds):
         self._check()

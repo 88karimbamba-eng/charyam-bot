@@ -282,3 +282,29 @@ class PdfDesactiveParDefautTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class EmailExtractionTests(unittest.TestCase):
+    """Les adresses de candidature cachées dans un lien mailto: ou masquées par Cloudflare ne doivent pas être perdues."""
+
+    def test_mailto_link_is_collected(self):
+        from integrations import web_reader
+        parser = web_reader._TextExtractor("https://exemple.test/offre")
+        parser.feed('<p>Envoyez votre CV</p><a href="mailto:rh@exemple.test?subject=Poste%20X">Postuler</a>')
+        self.assertEqual(parser.emails, ["rh@exemple.test"])
+
+    def test_cloudflare_obfuscated_email_is_decoded(self):
+        from integrations import web_reader
+        key = 0x42
+        address = "recrutement@exemple.test"
+        encoded = "%02x" % key + "".join("%02x" % (ord(c) ^ key) for c in address)
+        parser = web_reader._TextExtractor("https://exemple.test/")
+        parser.feed('<span class="__cf_email__" data-cfemail="' + encoded + '">[email protected]</span>')
+        self.assertEqual(parser.emails, [address])
+
+    def test_invalid_or_duplicate_addresses_are_ignored(self):
+        from integrations import web_reader
+        parser = web_reader._TextExtractor("https://exemple.test/")
+        parser.feed('<a href="mailto:pas-un-mail">a</a><a href="mailto:a@b.test">b</a><a href="mailto:A@B.test">c</a>')
+        self.assertEqual(parser.emails, ["a@b.test"])
+        self.assertEqual(web_reader._decode_cfemail("zz"), "")

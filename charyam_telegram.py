@@ -19,6 +19,7 @@ Intégrations (toutes facultatives, voir docs/INTEGRATIONS.md et .env.example) :
 
 import os
 import re
+import datetime
 import hmac
 import time
 import logging
@@ -33,7 +34,9 @@ import anthropic
 import httpx
 from flask import Flask, request, jsonify
 
+import access
 import charyam_docs
+import store as store_module
 from integrations.common import redact_secrets
 from integrations.tool_router import ToolRouter, complete_with_tools
 
@@ -64,6 +67,10 @@ WEBHOOK_URL = (
     or (os.environ.get("RENDER_EXTERNAL_URL") or "https://charyam-bot.onrender.com").rstrip("/") + "/webhook"
 )
 WEBHOOK_SECRET = os.environ.get("TELEGRAM_WEBHOOK_SECRET", "").strip()
+# Production = Render (variable RENDER=true posée par la plateforme) ou CHARYAM_ENV=production.
+# En production le secret du webhook est OBLIGATOIRE : sans lui, /webhook refuse tout (503).
+IS_PRODUCTION = (os.environ.get("RENDER", "").strip().lower() == "true"
+                 or os.environ.get("CHARYAM_ENV", "").strip().lower() == "production")
 
 MAX_HISTORY_MESSAGES = 20      # nombre maximal de messages gardés par conversation
 MAX_HISTORY_CHARS = 30000      # taille maximale cumulée de l'historique
@@ -76,6 +83,13 @@ WORKER_THREADS = 4
 KNOWN_FIRST_NAMES = {
     USER_ID: "Karim",
 }
+
+# Stockage persistant facultatif (Upstash) : sans ses deux variables, tout reste en mémoire locale
+UPSTASH_TOKEN = os.environ.get("UPSTASH_REDIS_REST_TOKEN", "").strip()
+persistent_store = store_module.make_store()
+
+# Testeurs autorisés (variable ALLOWED_USER_IDS) et limite de messages par utilisateur
+access_control = access.AccessControl(USER_ID, store=persistent_store)
 
 # Validation au démarrage
 if not TELEGRAM_TOKEN:
@@ -94,7 +108,8 @@ client = anthropic.Anthropic(
 telegram_http = httpx.Client(timeout=httpx.Timeout(20.0, connect=10.0))
 executor = ThreadPoolExecutor(max_workers=WORKER_THREADS, thread_name_prefix="charyam")
 
-# Mémoire simple par chat (en RAM : perdue à chaque redémarrage)
+# Mémoire par chat : cache local en RAM (perdu à chaque redémarrage). Si le stockage persistant est
+# configuré, la conversation y est aussi sauvegardée (7 jours) et rechargée après un redémarrage.
 chat_memory = {}
 chat_modes = {}              # activité choisie dans le menu, par chat (perdue au redémarrage)
 last_layouts = {}            # mise en page du dernier CV exporté, par chat (pages, remplissage), pour la légende du fichier
@@ -110,7 +125,7 @@ _thinking_rejected = False   # vrai si l'API a refusé le réglage CLAUDE_THINKI
 def redact(value) -> str:
     """Masque les secrets avant d'écrire quoi que ce soit dans les journaux"""
     text = str(value)
-    for secret in (TELEGRAM_TOKEN, CLAUDE_API_KEY, WEBHOOK_SECRET):
+    for secret in (TELEGRAM_TOKEN, CLAUDE_API_KEY, WEBHOOK_SECRET, UPSTASH_TOKEN):
         if secret:
             text = text.replace(secret, "***")
     return redact_secrets(text)
@@ -242,6 +257,16 @@ MODE_PROMPTS = {
         "et préparer des entretiens. N'invente jamais d'expérience, de diplôme, de date, "
         "d'employeur ou de chiffre : utilise uniquement ce que la personne fournit et demande "
         "ce qui manque. Signale honnêtement les écarts entre son profil et les exigences du poste. "
+        "Quand tu analyses une offre lue depuis une page, n'attribue à l'offre que ce que la page "
+        "contient réellement ; ce qui vient de toi (conseils, questions d'entretien types) doit "
+        "être présenté comme ton conseil, jamais comme un contenu de la page. "
+        "Si l'offre demande de candidater par e-mail, donne l'adresse seulement si elle figure "
+        "dans le texte lu ou dans la ligne « Adresses e-mail présentes sur la page » ; sinon écris "
+        "« adresse non trouvée sur la page » et ne l'invente pas. "
+        "Si une date limite est indiquée ou probable, calcule le nombre de jours restants à partir "
+        "de la date du jour donnée plus bas et signale l'urgence. "
+        "Tu ne connais pas le profil de la personne tant qu'elle ne l'a pas donné : ne dis pas "
+        "qu'elle convient au poste, demande-lui son CV actuel ou ses expériences. "
         "Structure les CV et les lettres avec des titres (#) et des listes (-) : la personne pourra "
         "ensuite en obtenir une copie Word ou PDF avec les boutons du menu. "
         "CV : mets le CV complet entre les balises [[CV]] et [[/CV]] (rien d'autre entre elles). Format "
@@ -290,8 +315,9 @@ HELP_TEXT = (
     "[à compléter].\n"
     "• Après une réponse, touche ⬇️ Word ou ⬇️ PDF pour la recevoir en fichier "
     "(le fichier contient ma dernière réponse, à relire avant usage).\n"
-    "• Je ne retiens que la conversation en cours, et je peux l'oublier après un redémarrage.\n\n"
-    "Commandes : /menu pour afficher le menu, /aide pour ce message."
+    "• Je ne retiens que la conversation en cours. Selon la configuration du service, je peux "
+    "l'oublier après un redémarrage ; /oubli l'efface quand tu veux.\n\n"
+    "Commandes : /menu pour afficher le menu, /aide pour ce message, /oubli pour effacer la conversation."
 )
 
 MODE_SELECTED_TEXT = {
@@ -308,7 +334,13 @@ MODE_SELECTED_TEXT = {
 }
 
 
-MENU_COMMANDS = ("/start", "/menu", "/aide", "/help", "/outils")
+MENU_COMMANDS = ("/start", "/menu", "/aide", "/help", "/outils", "/oubli")
+
+FORGET_DONE_TEXT = "C'est fait : j'ai effacé notre conversation et ma dernière réponse."
+FORGET_PARTIAL_TEXT = (
+    "J'ai effacé la conversation sur ce service, mais je n'ai pas pu confirmer l'effacement de la copie "
+    "sauvegardée. Réessaie /oubli dans quelques minutes."
+)
 
 CV_RE = re.compile(r"\[\[CV\]\](.*?)\[\[/CV\]\]", re.S)
 SCORE_RE = re.compile(r"\[\[SCORE\]\](.*?)\[\[/SCORE\]\]", re.S)
@@ -437,6 +469,11 @@ def handle_menu(chat_id: int, text: str):
         return HELP_TEXT, MENU_KEYBOARD
     if command == "/outils":
         return tools_status_text(), MENU_KEYBOARD
+    if command == "/oubli":
+        last_answers.pop(chat_id, None)
+        if _clear_history(chat_id):
+            return FORGET_DONE_TEXT, MENU_KEYBOARD
+        return FORGET_PARTIAL_TEXT, MENU_KEYBOARD
     mode = BUTTON_MODES.get(text.strip())
     if mode:
         chat_modes[chat_id] = mode
@@ -568,6 +605,8 @@ def build_system_prompt(first_name: str = "", mode: str = None) -> str:
     if mode in MODE_PROMPTS:
         parts.append(MODE_PROMPTS[mode])
         parts.append(MODE_RULE)
+        today = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d")
+        parts.append(f"Date du jour (UTC) : {today}.")
     return " ".join(parts)
 
 
@@ -633,7 +672,8 @@ def _configure_webhook():
             result = tg_call("setWebhook", payload)
             if result.get("ok"):
                 _secret_active = bool(WEBHOOK_SECRET)
-                logger.info("✅ Webhook configuré: %s", WEBHOOK_URL)
+                logger.info("✅ Webhook configuré: %s (secret enregistré chez Telegram : %s)",
+                            WEBHOOK_URL, "oui" if _secret_active else "non")
                 _log_webhook_status()
                 return
             logger.error("❌ Erreur webhook (tentative %s/3): %s", attempt, redact(result))
@@ -647,8 +687,21 @@ def _configure_webhook():
     logger.error("❌ Webhook non configuré après 3 tentatives (celui déjà enregistré reste actif)")
 
 
+def log_secret_diagnostic():
+    """Journalise UNIQUEMENT si le secret du webhook est présent et non vide, jamais sa valeur ni sa longueur."""
+    if WEBHOOK_SECRET:
+        logger.info("Secret du webhook : présent et non vide (contrôle de l'en-tête exigé sur /webhook)")
+    elif IS_PRODUCTION:
+        logger.critical("Secret du webhook : ABSENT ou vide en PRODUCTION (TELEGRAM_WEBHOOK_SECRET) : "
+                        "/webhook refuse toutes les requêtes (503) tant qu'il n'est pas défini")
+    else:
+        logger.warning("Secret du webhook : ABSENT ou vide (TELEGRAM_WEBHOOK_SECRET), hors production : "
+                       "/webhook n'authentifie PAS Telegram")
+
+
 def setup_webhook():
     """Lance la configuration du webhook en arrière-plan : ne bloque pas le démarrage de Gunicorn"""
+    log_secret_diagnostic()
     threading.Thread(target=_configure_webhook, name="setup-webhook", daemon=True).start()
 
 
@@ -826,11 +879,51 @@ def _user_error_message(exc: Exception) -> str:
     )
 
 
+def _load_history(chat_id: int) -> list:
+    """Historique du chat : le cache local d'abord (toujours au moins aussi récent dans ce processus),
+    sinon le stockage persistant. Une panne du stockage n'interrompt jamais la conversation."""
+    local = chat_memory.get(chat_id)
+    if local:
+        return local
+    if persistent_store is not None:
+        try:
+            saved = persistent_store.get_history(chat_id)
+        except store_module.StoreError as exc:
+            logger.warning("Mémoire persistante illisible, conversation locale utilisée (%s)", exc)
+            return []
+        if saved:
+            chat_memory[chat_id] = saved
+            return saved
+    return []
+
+
+def _save_history(chat_id: int, messages: list):
+    """Sauvegarde dans le cache local, puis dans le stockage persistant s'il existe (échec journalisé)."""
+    chat_memory[chat_id] = messages
+    if persistent_store is not None:
+        try:
+            persistent_store.set_history(chat_id, messages)
+        except store_module.StoreError as exc:
+            logger.warning("Mémoire persistante non sauvegardée, copie locale conservée (%s)", exc)
+
+
+def _clear_history(chat_id: int) -> bool:
+    """Efface la conversation partout. Retourne False si la copie persistante n'a pas pu être effacée."""
+    chat_memory.pop(chat_id, None)
+    if persistent_store is not None:
+        try:
+            persistent_store.delete_history(chat_id)
+        except store_module.StoreError as exc:
+            logger.warning("Effacement de la mémoire persistante impossible (%s)", exc)
+            return False
+    return True
+
+
 def get_claude_response(user_id: int, chat_id: int, user_message: str, first_name: str = "") -> str:
     """Obtient une réponse de Claude avec mémoire du chat.
     La mémoire n'est modifiée qu'après une réponse réussie."""
     messages = clean_history(
-        chat_memory.get(chat_id, []) + [{"role": "user", "content": user_message}]
+        _load_history(chat_id) + [{"role": "user", "content": user_message}]
     )
     system = build_system_prompt(first_name, chat_modes.get(chat_id))
 
@@ -858,7 +951,7 @@ def get_claude_response(user_id: int, chat_id: int, user_message: str, first_nam
             return "Je n'ai pas réussi à formuler de réponse. Reformule ta demande, s'il te plaît."
 
         # Mémoire : uniquement du texte, jamais de blocs « thinking »
-        chat_memory[chat_id] = trim_history(messages + [{"role": "assistant", "content": text}])
+        _save_history(chat_id, trim_history(messages + [{"role": "assistant", "content": text}]))
         _remember_answer(
             chat_id,
             text + ("\n\n[Réponse incomplète : limite de longueur atteinte.]" if stop_reason == "max_tokens" else ""),
@@ -876,7 +969,7 @@ def get_claude_response(user_id: int, chat_id: int, user_message: str, first_nam
         logger.error("Détail: %s", redact(traceback.format_exc()))
         if isinstance(e, anthropic.BadRequestError):
             # Requête refusée : on repart d'un historique vide pour ne pas bloquer les messages suivants
-            chat_memory.pop(chat_id, None)
+            _clear_history(chat_id)
             logger.warning("Historique du chat %s réinitialisé après une requête refusée", chat_id)
         return _user_error_message(e)
 
@@ -899,6 +992,14 @@ def _already_seen(update_id) -> bool:
         while len(_seen_updates) > 500:
             _seen_updates.popitem(last=False)
         return False
+
+
+def _send_notice(chat_id: int, text: str):
+    """Envoie un court message d'information (accès refusé, limite atteinte), sans appeler Claude"""
+    try:
+        send_telegram_message(chat_id, text)
+    except Exception as e:
+        logger.error("Erreur envoi information (%s): %s", type(e).__name__, redact(e))
 
 
 def process_message(user_id: int, chat_id: int, text: str, message_id: int):
@@ -941,14 +1042,34 @@ def process_message(user_id: int, chat_id: int, text: str, message_id: int):
             logger.error("Erreur envoi réponse (%s): %s", type(e).__name__, redact(e))
 
 
+def webhook_auth(received: str, secret: str, production: bool) -> str:
+    """Décide si une requête /webhook est authentifiée. Retourne :
+    - « accepte »      : secret configuré et en-tête identique (comparaison en temps constant) ;
+    - « refuse »       : secret configuré mais en-tête absent, vide ou différent ;
+    - « mal_configure » : production SANS secret : tout est refusé (jamais de fail-open en production) ;
+    - « ouvert_dev »   : hors production et sans secret : contrôle désactivé (poste de développement, tests).
+    Un secret vide n'est jamais comparé : hmac.compare_digest(b"", b"") serait vrai."""
+    secret = (secret or "").strip()
+    if not secret:
+        return "mal_configure" if production else "ouvert_dev"
+    received = received or ""
+    if hmac.compare_digest(received.encode("utf-8"), secret.encode("utf-8")):
+        return "accepte"
+    return "refuse"
+
+
 @app.route("/webhook", methods=["POST"])
 def webhook():
     """Reçoit les mises à jour Telegram et répond tout de suite (le travail se fait en arrière-plan)"""
-    if _secret_active:
-        received = request.headers.get("X-Telegram-Bot-Api-Secret-Token", "")
-        if not hmac.compare_digest(received.encode("utf-8"), WEBHOOK_SECRET.encode("utf-8")):
-            logger.warning("Webhook refusé: jeton secret invalide")
-            return jsonify({"ok": False}), 403
+    # Authentification AVANT tout traitement. Secret configuré : exigé, même si son enregistrement chez
+    # Telegram n'a pas (encore) réussi. Production sans secret : tout est refusé (503), jamais de fail-open.
+    verdict = webhook_auth(request.headers.get("X-Telegram-Bot-Api-Secret-Token", ""), WEBHOOK_SECRET, IS_PRODUCTION)
+    if verdict == "mal_configure":
+        logger.error("Webhook refusé: TELEGRAM_WEBHOOK_SECRET absent ou vide en production (service fermé)")
+        return jsonify({"ok": False}), 503
+    if verdict == "refuse":
+        logger.warning("Webhook refusé: jeton secret invalide")
+        return jsonify({"ok": False}), 403
 
     try:
         update = request.get_json(silent=True)
@@ -967,8 +1088,10 @@ def webhook():
         text = message.get("text") or ""
         message_id = message.get("message_id")
 
-        if user_id != USER_ID:
+        if not access_control.is_allowed(user_id):
             logger.warning("Message ignoré: utilisateur non autorisé (%s)", user_id)
+            if chat_id is not None and access_control.should_notify(user_id, "refus"):
+                executor.submit(_send_notice, chat_id, access.refusal_text(user_id))
             return jsonify({"ok": True})
 
         if chat_id is None or not text.strip():
@@ -982,6 +1105,13 @@ def webhook():
 
         if _already_seen(update.get("update_id")):
             logger.info("Mise à jour déjà traitée, ignorée")
+            return jsonify({"ok": True})
+
+        allowed_now, limit_kind = access_control.check_rate(user_id)
+        if not allowed_now:
+            logger.info("Message refusé: limite par %s atteinte (%s)", limit_kind, user_id)
+            if access_control.should_notify(user_id, "limite-" + limit_kind):
+                executor.submit(_send_notice, chat_id, access.rate_limit_text(limit_kind))
             return jsonify({"ok": True})
 
         # Le contenu des messages n'est jamais écrit dans les journaux

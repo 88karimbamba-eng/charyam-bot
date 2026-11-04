@@ -124,7 +124,7 @@ class WebhookDiagnosticsTest(unittest.TestCase):
 
     def test_non_regression_message_normal(self):
         before = len(base.CLAUDE_CALLS)
-        self.post(base._update("bonjour"))
+        self.post(base._update("Une question"))
         self.assertEqual(len(base.CLAUDE_CALLS), before + 1)
 
 

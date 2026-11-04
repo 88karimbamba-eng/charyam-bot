@@ -104,7 +104,7 @@ class BotTest(unittest.TestCase):
         self.assertEqual(self.client.get("/health").get_json(), {"status": "ok"})
 
     def test_message_normal_appelle_claude(self):
-        self.post("bonjour")
+        self.post("Quel est le délai pour un CV ?")
         self.assertEqual(len(CLAUDE_CALLS), 1)
         self.assertNotIn("Activité en cours", CLAUDE_CALLS[0]["system"])
         self.assertEqual(self.sent()[-1]["text"], "Réponse de test")

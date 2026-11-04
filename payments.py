@@ -87,7 +87,13 @@ class PaymentGate:
     def payment_request_text(self) -> str:
         if not self.configured:
             return NOT_CONFIGURED_TEXT
-        return f"Pour recevoir ton fichier, effectue le paiement :\n{self.instructions}\n\n{PROOF_USAGE_TEXT}"
+        return (
+            "Pour recevoir ton fichier, 3 étapes :\n"
+            f"1️⃣ Paie :\n{self.instructions}\n"
+            f"2️⃣ {PROOF_USAGE_TEXT}\n"
+            "3️⃣ Attends ma confirmation ici (l'administrateur vérifie ton paiement), "
+            "puis touche de nouveau ⬇️ Word ou ⬇️ PDF."
+        )
 
     def declare(self, chat_id, reference: str, now: float = None):
         """Enregistre la déclaration de paiement d'un client. Retourne la référence nettoyée, ou None si vide."""

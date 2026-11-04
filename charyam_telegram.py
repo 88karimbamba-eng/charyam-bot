@@ -37,6 +37,7 @@ from flask import Flask, request, jsonify
 import access
 import charyam_docs
 import cv_questionnaire
+import guide
 import payments
 import store as store_module
 from integrations.common import redact_secrets
@@ -242,6 +243,8 @@ MODE_DOCUMENTS = "documents"
 BUTTON_EMPLOI = "💼 Emploi & Candidatures"
 BUTTON_DOCUMENTS = "📄 Documents professionnels"
 BUTTON_CV = "📝 CV intelligent"
+BUTTON_LETTRE = "✉️ Lettre de motivation"
+BUTTON_TARIFS = "💰 Tarifs & paiement"
 BUTTON_AIDE = "❓ Aide"
 BUTTON_WORD = "⬇️ Word"
 BUTTON_PDF = "⬇️ PDF"
@@ -257,11 +260,11 @@ BUTTON_MODES = {
 # ce qui fonctionne avec allowed_updates=["message"] (pas de callback_query à gérer).
 MENU_KEYBOARD = {
     "keyboard": [
-        [{"text": BUTTON_CV}],
+        [{"text": BUTTON_CV}, {"text": BUTTON_LETTRE}],
         [{"text": BUTTON_EMPLOI}],
         [{"text": BUTTON_DOCUMENTS}],
         [{"text": BUTTON_WORD}, {"text": BUTTON_PDF}],
-        [{"text": BUTTON_AIDE}],
+        [{"text": BUTTON_TARIFS}, {"text": BUTTON_AIDE}],
     ],
     "resize_keyboard": True,
     "is_persistent": True,
@@ -320,8 +323,10 @@ MODE_RULE = (
 MENU_TEXT = (
     "Choisis une activité dans le menu ci-dessous, ou écris simplement ta question.\n\n"
     f"{BUTTON_CV} : je te pose 8 questions, une à la fois, puis je rédige ton CV (Word/PDF).\n"
+    f"{BUTTON_LETTRE} : une lettre de motivation adaptée à ton offre.\n"
     f"{BUTTON_EMPLOI} : analyse d'offre, CV, lettre, email de candidature, entretien.\n"
     f"{BUTTON_DOCUMENTS} : courrier, devis, facture, compte rendu, rapport.\n\n"
+    f"{BUTTON_TARIFS} : les prix et comment payer.\n"
     f"{BUTTON_WORD} ou {BUTTON_PDF} : recevoir ma dernière réponse en fichier."
 )
 
@@ -549,6 +554,8 @@ def tools_status_text() -> str:
     return "\n".join(lines)
 
 
+GUIDE_BUTTONS = frozenset({BUTTON_LETTRE, BUTTON_TARIFS})
+
 NO_CV_FLOW_TEXT = "Aucun questionnaire CV en cours. Touche 📝 CV intelligent pour en commencer un."
 
 
@@ -557,6 +564,10 @@ def handle_cv_flow(chat_id: int, text: str):
     (texte à envoyer, clavier, message à donner à Claude ou None). Claude n'est appelé qu'à la fin."""
     stripped = text.strip()
     command = stripped.split()[0].split("@")[0].lower() if stripped.startswith("/") else ""
+
+    if guide.is_greeting(text) and cv_flow.is_active(chat_id):
+        # Un « bonjour » n'est jamais la réponse à une étape : on reprend la question où elle s'est arrêtée
+        return guide.resume_text() + "\n\n" + cv_flow.start(chat_id), MENU_KEYBOARD, None
 
     if command == cv_questionnaire.COMMAND_START or stripped == BUTTON_CV:
         chat_modes[chat_id] = MODE_EMPLOI
@@ -572,6 +583,7 @@ def handle_cv_flow(chat_id: int, text: str):
     elif (
         not command
         and stripped not in BUTTON_MODES
+        and stripped not in GUIDE_BUTTONS
         and stripped != BUTTON_AIDE
         and cv_flow.is_active(chat_id)
     ):
@@ -587,12 +599,24 @@ def handle_cv_flow(chat_id: int, text: str):
     return reply, MENU_KEYBOARD, None
 
 
+def welcome_message() -> str:
+    """Accueil du parcours guidé : étapes, tarifs officiels (jamais inventés) et boutons"""
+    return guide.welcome_text(payment_gate.instructions, BUTTON_CV, BUTTON_LETTRE, BUTTON_EMPLOI, BUTTON_DOCUMENTS)
+
+
 def handle_menu(chat_id: int, text: str):
     """Traite les commandes et les boutons du menu sans appeler Claude.
     Retourne (texte, clavier) si le message est géré ici, sinon None."""
     command = text.strip().split()[0].split("@")[0].lower() if text.strip() else ""
-    if command in ("/start", "/menu"):
+    if command == "/start" or guide.is_greeting(text):
+        return welcome_message(), MENU_KEYBOARD
+    if command == "/menu":
         return MENU_TEXT, MENU_KEYBOARD
+    if text.strip() == BUTTON_LETTRE:
+        chat_modes[chat_id] = MODE_EMPLOI
+        return guide.lettre_intro(BUTTON_CV), MENU_KEYBOARD
+    if text.strip() == BUTTON_TARIFS:
+        return guide.tariffs_text(payment_gate.instructions, BUTTON_WORD, BUTTON_PDF), MENU_KEYBOARD
     if command in ("/aide", "/help") or text.strip() == BUTTON_AIDE:
         return HELP_TEXT, MENU_KEYBOARD
     if command == "/outils":
@@ -1173,6 +1197,7 @@ def process_message(user_id: int, chat_id: int, text: str, message_id: int):
                 logger.error("Erreur export (%s): %s", type(e).__name__, redact(e))
             return
 
+        cv_just_written = False
         cv_reply = handle_cv_flow(chat_id, text)
         if cv_reply is not None:
             reply_text, keyboard, claude_input = cv_reply
@@ -1184,6 +1209,7 @@ def process_message(user_id: int, chat_id: int, text: str, message_id: int):
                 return
             text = claude_input          # questionnaire terminé : Claude rédige le CV
             message_id = None
+            cv_just_written = True
         else:
             menu_reply = handle_menu(chat_id, text)
             if menu_reply:
@@ -1212,6 +1238,16 @@ def process_message(user_id: int, chat_id: int, text: str, message_id: int):
             send_telegram_message(chat_id, telegram_display(response_text), reply_to_message_id=message_id)
         except Exception as e:
             logger.error("Erreur envoi réponse (%s): %s", type(e).__name__, redact(e))
+            return
+
+        if cv_just_written and CV_RE.search(response_text or ""):
+            # Étape suivante : texte fixe (pas d'appel Claude), pour que le client sache toujours quoi faire
+            try:
+                send_telegram_message(
+                    chat_id, guide.after_cv_text(BUTTON_WORD, BUTTON_PDF, BUTTON_LETTRE), reply_markup=MENU_KEYBOARD
+                )
+            except Exception as e:
+                logger.error("Erreur envoi étape suivante (%s): %s", type(e).__name__, redact(e))
 
 
 def webhook_auth(received: str, secret: str, production: bool) -> str:

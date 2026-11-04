@@ -28,7 +28,7 @@ class GreetingTest(unittest.TestCase):
             self.assertFalse(guide.is_greeting(text), text)
 
     def test_sans_prix_invente(self):
-        text = guide.welcome_text("", "A", "B", "C", "D")
+        text = guide.welcome_text("", "A", "B", "C", "D", "E", "F", "G")
         self.assertNotIn("FCFA", text)
         self.assertIn("administrateur", text)
 

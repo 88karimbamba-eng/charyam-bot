@@ -60,17 +60,32 @@ def tariffs_block(instructions: str) -> str:
 
 
 def welcome_text(instructions: str, button_cv: str, button_lettre: str, button_emploi: str,
-                 button_documents: str) -> str:
+                 button_documents: str, button_volet_cv: str, button_ebooks: str, button_boutique: str) -> str:
     return (
         "Bonjour 👋 Bienvenue chez CHARYAM BOUTIQUE.\n"
-        "Je t'accompagne pas à pas, de la première question jusqu'à ton fichier.\n\n"
-        + STEPS_TEXT + "\n\n"
-        + tariffs_block(instructions) + "\n\n"
-        "Que veux-tu faire ? Touche un bouton 👇\n"
+        "Je t'accompagne pas à pas. Voici ce que tu peux faire ici, touche un bouton 👇\n\n"
+        f"📝 1. CV et lettre de motivation ({button_volet_cv})\n"
+        + STEPS_TEXT + "\n"
+        + tariffs_block(instructions) + "\n"
         f"{button_cv} : je te pose 8 questions, puis je rédige ton CV.\n"
         f"{button_lettre} : une lettre adaptée à ton offre.\n"
         f"{button_emploi} : analyse d'offre, email de candidature, entretien.\n"
-        f"{button_documents} : courrier, devis, facture, rapport."
+        f"{button_documents} : courrier, devis, facture, rapport.\n\n"
+        f"📚 2. Ebooks ({button_ebooks}) : nos ebooks en vente sur notre boutique en ligne.\n\n"
+        f"🛍️ 3. Vêtements, accessoires et savon bio ({button_boutique}) : notre boutique sur WhatsApp."
+    )
+
+
+def cv_volet_text(instructions: str, button_cv: str, button_lettre: str, button_tarifs: str) -> str:
+    """Volet « CV et lettre de motivation » : ce qui se passe, du premier bouton au fichier."""
+    return (
+        "📝 CV et lettre de motivation\n\n"
+        + STEPS_TEXT + "\n\n"
+        + tariffs_block(instructions) + "\n\n"
+        "Par quoi commencer ?\n"
+        f"{button_cv} : je te pose 8 questions, puis je rédige ton CV.\n"
+        f"{button_lettre} : une lettre adaptée à ton offre.\n"
+        f"{button_tarifs} : les prix et comment payer."
     )
 
 

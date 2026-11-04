@@ -38,6 +38,7 @@ from flask import Flask, request, jsonify
 import access
 import charyam_docs
 import cv_questionnaire
+import boutique
 import guide
 import payments
 import store as store_module
@@ -250,6 +251,9 @@ BUTTON_DOCUMENTS = "📄 Documents professionnels"
 BUTTON_CV = "📝 CV intelligent"
 BUTTON_LETTRE = "✉️ Lettre de motivation"
 BUTTON_TARIFS = "💰 Tarifs & paiement"
+BUTTON_VOLET_CV = "📝 CV & Lettre"
+BUTTON_EBOOKS = "📚 Ebooks"
+BUTTON_BOUTIQUE = "🛍️ Boutique"
 BUTTON_AIDE = "❓ Aide"
 BUTTON_WORD = "⬇️ Word"
 BUTTON_PDF = "⬇️ PDF"
@@ -265,6 +269,7 @@ BUTTON_MODES = {
 # ce qui fonctionne avec allowed_updates=["message"] (pas de callback_query à gérer).
 MENU_KEYBOARD = {
     "keyboard": [
+        [{"text": BUTTON_VOLET_CV}, {"text": BUTTON_EBOOKS}, {"text": BUTTON_BOUTIQUE}],
         [{"text": BUTTON_CV}, {"text": BUTTON_LETTRE}],
         [{"text": BUTTON_EMPLOI}],
         [{"text": BUTTON_DOCUMENTS}],
@@ -274,6 +279,13 @@ MENU_KEYBOARD = {
     "resize_keyboard": True,
     "is_persistent": True,
 }
+
+# Liens de redirection (pas de paiement dans le bot pour ces deux volets). Lien absent ou invalide :
+# le client est prévenu que le lien arrive bientôt, rien n'est inventé.
+CHARIOW_STORE_URL = boutique.clean_url(os.environ.get("CHARIOW_STORE_URL") or boutique.DEFAULT_CHARIOW_URL)
+WHATSAPP_SHOP_URL = boutique.clean_url(os.environ.get("WHATSAPP_SHOP_URL", ""))
+if os.environ.get("WHATSAPP_SHOP_URL", "").strip() and not WHATSAPP_SHOP_URL:
+    logger.warning("WHATSAPP_SHOP_URL n'est pas un lien https complet : ignoré")
 
 MODE_PROMPTS = {
     MODE_EMPLOI: (
@@ -327,6 +339,9 @@ MODE_RULE = (
 
 MENU_TEXT = (
     "Choisis une activité dans le menu ci-dessous, ou écris simplement ta question.\n\n"
+    f"{BUTTON_VOLET_CV} : CV, lettre de motivation, tarifs et paiement.\n"
+    f"{BUTTON_EBOOKS} : nos ebooks en vente sur la boutique en ligne.\n"
+    f"{BUTTON_BOUTIQUE} : vêtements, accessoires et savon bio sur WhatsApp.\n\n"
     f"{BUTTON_CV} : je te pose 8 questions, une à la fois, puis je rédige ton CV (Word/PDF).\n"
     f"{BUTTON_LETTRE} : une lettre de motivation adaptée à ton offre.\n"
     f"{BUTTON_EMPLOI} : analyse d'offre, CV, lettre, email de candidature, entretien.\n"
@@ -559,7 +574,7 @@ def tools_status_text() -> str:
     return "\n".join(lines)
 
 
-GUIDE_BUTTONS = frozenset({BUTTON_LETTRE, BUTTON_TARIFS})
+GUIDE_BUTTONS = frozenset({BUTTON_LETTRE, BUTTON_TARIFS, BUTTON_VOLET_CV, BUTTON_EBOOKS, BUTTON_BOUTIQUE})
 
 NO_CV_FLOW_TEXT = "Aucun questionnaire CV en cours. Touche 📝 CV intelligent pour en commencer un."
 
@@ -606,7 +621,10 @@ def handle_cv_flow(chat_id: int, text: str):
 
 def welcome_message() -> str:
     """Accueil du parcours guidé : étapes, tarifs officiels (jamais inventés) et boutons"""
-    return guide.welcome_text(payment_gate.instructions, BUTTON_CV, BUTTON_LETTRE, BUTTON_EMPLOI, BUTTON_DOCUMENTS)
+    return guide.welcome_text(
+        payment_gate.instructions, BUTTON_CV, BUTTON_LETTRE, BUTTON_EMPLOI, BUTTON_DOCUMENTS,
+        BUTTON_VOLET_CV, BUTTON_EBOOKS, BUTTON_BOUTIQUE,
+    )
 
 
 def handle_menu(chat_id: int, text: str):
@@ -617,6 +635,18 @@ def handle_menu(chat_id: int, text: str):
         return welcome_message(), MENU_KEYBOARD
     if command == "/menu":
         return MENU_TEXT, MENU_KEYBOARD
+    if text.strip() == BUTTON_VOLET_CV:
+        return guide.cv_volet_text(payment_gate.instructions, BUTTON_CV, BUTTON_LETTRE, BUTTON_TARIFS), MENU_KEYBOARD
+    if text.strip() == BUTTON_EBOOKS:
+        return (
+            boutique.ebooks_text(bool(CHARIOW_STORE_URL)),
+            boutique.link_keyboard(boutique.BUTTON_LABEL_EBOOKS, CHARIOW_STORE_URL) or MENU_KEYBOARD,
+        )
+    if text.strip() == BUTTON_BOUTIQUE:
+        return (
+            boutique.boutique_text(bool(WHATSAPP_SHOP_URL)),
+            boutique.link_keyboard(boutique.BUTTON_LABEL_BOUTIQUE, WHATSAPP_SHOP_URL) or MENU_KEYBOARD,
+        )
     if text.strip() == BUTTON_LETTRE:
         chat_modes[chat_id] = MODE_EMPLOI
         return guide.lettre_intro(BUTTON_CV), MENU_KEYBOARD

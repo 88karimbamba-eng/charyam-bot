@@ -712,9 +712,9 @@ def build_system_prompt(first_name: str = "", mode: str = None) -> str:
         "en Word/PDF), l'aide à l'emploi (analyse d'offre, CV adapté, lettre de motivation, email de "
         "candidature, entretien) et les documents professionnels (courrier, devis, facture, compte "
         "rendu, rapport). Pour tout autre sujet, réponds si tu peux et honnêtement, sans inventer.",
-        "Tu ne connais ni tarifs, ni délais, ni moyens de paiement, ni catalogue de produits : n'en "
-        "donne jamais et ne promets jamais un service, une livraison ou un paiement que tu ne gères "
-        "pas. Dis plutôt que l'administrateur précisera ces points.",
+        "Hors tarifs et moyens de paiement officiels indiqués plus bas, tu ne connais ni délais, ni "
+        "catalogue de produits : n'en invente jamais et ne promets jamais un service, une livraison ou "
+        "un paiement que tu ne gères pas. Dis plutôt que l'administrateur précisera ces points.",
         "Si la demande concerne un de tes trois services, invite la personne à le choisir avec les "
         "boutons du menu (ou /menu). Si une information essentielle manque, pose UNE seule question.",
     ]
@@ -735,6 +735,14 @@ def build_system_prompt(first_name: str = "", mode: str = None) -> str:
         "Si elle te dit son prénom ou te salue par son prénom, "
         "c'est elle qui le porte, jamais toi."
     )
+    if payment_gate.configured:
+        parts.append(
+            "Tarifs et moyens de paiement OFFICIELS de CHARYAM (à citer tels quels, sans rien changer ni "
+            "ajouter) : " + payment_gate.instructions.replace("\n", " ") + " "
+            "Si on te demande un prix ou comment payer, donne exactement ces informations. Pour recevoir un "
+            "fichier Word/PDF, le client touche le bouton ⬇️ Word ou ⬇️ PDF, paie, puis envoie /paye suivi de "
+            "sa référence de transaction ; l'administrateur valide ensuite."
+        )
     parts.append("Réponds en français, de façon concise et utile. Ne fabrique rien.")
     parts.append(
         "Tu ne retiens que la conversation en cours. Tu n'as pas de mémoire permanente "

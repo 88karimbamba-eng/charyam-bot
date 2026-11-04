@@ -154,5 +154,25 @@ class BotPaymentFlowTest(unittest.TestCase):
             self.assertIn(command, bot.MENU_COMMANDS)
 
 
+class PromptTarifsTest(unittest.TestCase):
+    def setUp(self):
+        self.old_gate = bot.payment_gate
+
+    def tearDown(self):
+        bot.payment_gate = self.old_gate
+
+    def test_tarifs_officiels_dans_le_prompt(self):
+        bot.payment_gate = payments.PaymentGate(OWNER, "CV 2 500 FCFA.\nWave +225 07 07 54 45 85.")
+        prompt = bot.build_system_prompt("", None)
+        self.assertIn("CV 2 500 FCFA. Wave +225 07 07 54 45 85.", prompt)
+        self.assertIn("/paye", prompt)
+
+    def test_sans_configuration_aucun_tarif(self):
+        bot.payment_gate = payments.PaymentGate(OWNER, "")
+        prompt = bot.build_system_prompt("", None)
+        self.assertNotIn("OFFICIELS", prompt)
+        self.assertIn("n'en invente jamais", prompt)
+
+
 if __name__ == "__main__":
     unittest.main()

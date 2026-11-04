@@ -84,6 +84,9 @@ class WebhookDisplayTest(unittest.TestCase):
         self.assertIn("keyboard", payload["reply_markup"])
 
     def test_commande_inconnue_d_un_autre_utilisateur_reste_ignoree(self):
+        old = bot.access_control.open_access
+        bot.access_control.open_access = False      # mode fermé (OPEN_ACCESS=0)
+        self.addCleanup(setattr, bot.access_control, "open_access", old)
         self.client.post("/webhook", json=base._update("/test", user_id=1))
         self.assertEqual(self.sent(), [])
 

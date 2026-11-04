@@ -234,6 +234,26 @@ def _assistant_content(response) -> list:
     return list(getattr(response, "content", None) or [])
 
 
+class RestrictedRouter:
+    """Routeur qui n'expose qu'une liste blanche d'outils (utilisateurs hors liste : lecture de page seulement).
+    Mêmes méthodes que ToolRouter pour complete_with_tools ; un outil hors liste est refusé même si demandé."""
+
+    def __init__(self, router: "ToolRouter", allowed: frozenset):
+        self._router = router
+        self._allowed = frozenset(allowed)
+
+    def definitions(self) -> list:
+        return [d for d in self._router.definitions() if d.get("name") in self._allowed]
+
+    def enabled(self) -> bool:
+        return bool(self.definitions())
+
+    def execute(self, name: str, args) -> ToolResult:
+        if name not in self._allowed:
+            return ToolResult.error("Cet outil n'est pas disponible.")
+        return self._router.execute(name, args)
+
+
 def complete_with_tools(create, kwargs: dict, router: "ToolRouter"):
     """Appelle Claude ; si Claude demande des outils, les exécute et recommence (tours bornés).
 

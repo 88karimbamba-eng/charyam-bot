@@ -37,6 +37,7 @@ from flask import Flask, request, jsonify
 import access
 import charyam_docs
 import cv_questionnaire
+import payments
 import store as store_module
 from integrations.common import redact_secrets
 from integrations.tool_router import ToolRouter, complete_with_tools
@@ -91,6 +92,14 @@ persistent_store = store_module.make_store()
 
 # Testeurs autorisés (variable ALLOWED_USER_IDS) et limite de messages par utilisateur
 access_control = access.AccessControl(USER_ID, store=persistent_store)
+
+# Porte de paiement manuelle : les clients ne reçoivent leur fichier qu'après validation du propriétaire.
+# PAYMENT_INSTRUCTIONS (prix, numéros Mobile Money) est saisi dans Render, jamais dans le dépôt.
+payment_gate = payments.PaymentGate(
+    USER_ID,
+    os.environ.get("PAYMENT_INSTRUCTIONS", ""),
+    _env_int("PAYMENT_VALID_HOURS", payments.DEFAULT_VALID_HOURS, 1, 168),
+)
 
 # Questionnaire « CV intelligent » : progression par chat (mémoire locale + stockage persistant si présent)
 cv_flow = cv_questionnaire.CvFlow(persistent_store)
@@ -324,8 +333,10 @@ HELP_TEXT = (
     "(le fichier contient ma dernière réponse, à relire avant usage).\n"
     "• Je ne retiens que la conversation en cours. Selon la configuration du service, je peux "
     "l'oublier après un redémarrage ; /oubli l'efface quand tu veux.\n\n"
+    "• Les fichiers Word/PDF sont livrés après paiement : suis les consignes, puis envoie "
+    "/paye suivi de ta référence de transaction.\n\n"
     "Commandes : /menu pour afficher le menu, /aide pour ce message, /cv pour le questionnaire CV, "
-    "/oubli pour effacer la conversation."
+    "/paye pour déclarer un paiement, /oubli pour effacer la conversation."
 )
 
 MODE_SELECTED_TEXT = {
@@ -342,7 +353,7 @@ MODE_SELECTED_TEXT = {
 }
 
 
-MENU_COMMANDS = ("/start", "/menu", "/aide", "/help", "/outils", "/oubli",
+MENU_COMMANDS = ("/start", "/menu", "/aide", "/help", "/outils", "/oubli", *payments.PAYMENT_COMMANDS,
                  cv_questionnaire.COMMAND_START, cv_questionnaire.COMMAND_CANCEL, cv_questionnaire.COMMAND_SKIP)
 
 FORGET_DONE_TEXT = "C'est fait : j'ai effacé notre conversation et ma dernière réponse."
@@ -457,6 +468,74 @@ def _reply_unknown_command(chat_id: int):
         send_telegram_message(chat_id, UNKNOWN_COMMAND_TEXT, reply_markup=MENU_KEYBOARD)
     except Exception as e:
         logger.error("Erreur envoi commande inconnue (%s): %s", type(e).__name__, redact(e))
+
+
+def handle_payment_command(user_id: int, chat_id: int, text: str):
+    """Commandes de paiement. Retourne True si le message a été traité ici, sinon False.
+    /paye : tout utilisateur autorisé ; /valider, /refuser, /paiements : propriétaire seulement."""
+    parts = text.strip().split(maxsplit=1)
+    command = parts[0].split("@")[0].lower() if parts else ""
+    if command not in payments.PAYMENT_COMMANDS:
+        return False
+    argument = parts[1] if len(parts) > 1 else ""
+
+    def say(target, message, keyboard=MENU_KEYBOARD):
+        try:
+            send_telegram_message(target, message, reply_markup=keyboard)
+        except Exception as e:
+            logger.error("Erreur envoi paiement (%s): %s", type(e).__name__, redact(e))
+
+    if command in payments.OWNER_ONLY_COMMANDS and not payment_gate.is_owner(user_id):
+        say(chat_id, UNKNOWN_COMMAND_TEXT)
+        return True
+
+    if command == "/paye":
+        if payment_gate.is_owner(user_id):
+            say(chat_id, "Tu es l'administrateur : tes fichiers ne sont jamais soumis au paiement.")
+            return True
+        if not payment_gate.configured:
+            say(chat_id, payments.NOT_CONFIGURED_TEXT)
+            return True
+        reference = payment_gate.declare(chat_id, argument)
+        if reference is None:
+            say(chat_id, payments.PROOF_USAGE_TEXT)
+            return True
+        logger.info("Paiement déclaré par le chat %s (en attente de validation)", chat_id)
+        say(chat_id, "Merci. Ta déclaration est transmise à l'administrateur. "
+                     "Tu seras prévenu dès que le paiement est vérifié.")
+        say(payment_gate.owner_id,
+            f"Paiement déclaré par le chat {chat_id}.\nRéférence : {reference}\n"
+            f"Après vérification dans ton application Mobile Money :\n"
+            f"/valider {chat_id}   ou   /refuser {chat_id}")
+        return True
+
+    if command == "/paiements":
+        pending = payment_gate.pending_summary()
+        if not pending:
+            say(chat_id, "Aucune déclaration de paiement en attente.")
+        else:
+            lines = [f"{cid} : {ref}" for cid, ref in pending]
+            say(chat_id, "Déclarations en attente :\n" + "\n".join(lines))
+        return True
+
+    target = payments.parse_chat_id(argument)
+    if target is None:
+        say(chat_id, f"Indique l'identifiant du client : {command} 123456789")
+        return True
+    if command == "/valider":
+        payment_gate.approve(target)
+        logger.info("Paiement validé pour le chat %s", target)
+        say(chat_id, f"Paiement validé pour {target}. Le client peut télécharger ses fichiers "
+                     f"pendant {payment_gate.valid_seconds // 3600} h.")
+        say(target, "Paiement vérifié, merci. Touche ⬇️ Word ou ⬇️ PDF pour recevoir ton fichier.")
+    else:
+        removed = payment_gate.reject(target)
+        logger.info("Paiement refusé pour le chat %s (déclaration trouvée: %s)", target, removed)
+        say(chat_id, f"Paiement refusé pour {target}." if removed
+            else f"Rien à refuser pour {target} (aucune déclaration ni validation).")
+        if removed:
+            say(target, "Ton paiement n'a pas pu être vérifié. Contacte l'administrateur.")
+    return True
 
 
 def tools_status_text() -> str:
@@ -1053,8 +1132,17 @@ def _send_notice(chat_id: int, text: str):
 def process_message(user_id: int, chat_id: int, text: str, message_id: int):
     """Traite un message en arrière-plan : une conversation à la fois, erreurs isolées"""
     with _get_chat_lock(chat_id):
+        if handle_payment_command(user_id, chat_id, text):
+            return
+
         export_format = EXPORT_BUTTONS.get(text.strip())
         if export_format:
+            if not payment_gate.can_export(user_id, chat_id):
+                try:
+                    send_telegram_message(chat_id, payment_gate.payment_request_text(), reply_markup=MENU_KEYBOARD)
+                except Exception as e:
+                    logger.error("Erreur envoi consignes (%s): %s", type(e).__name__, redact(e))
+                return
             try:
                 _handle_export(chat_id, export_format)
             except Exception as e:

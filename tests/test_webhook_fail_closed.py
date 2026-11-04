@@ -54,7 +54,7 @@ class WebhookAppTest(unittest.TestCase):
     def post_owner(self, headers=None):
         script = Scripted(reply(text("réponse de Claude")))
         with mock.patch.object(bot.client.messages, "create", script):
-            response = self.client.post("/webhook", json=base._update("Bonjour"), headers=headers or {})
+            response = self.client.post("/webhook", json=base._update("Une question"), headers=headers or {})
         return response, script
 
     def assert_aucun_effet(self, script):

@@ -92,7 +92,7 @@ class OpenAccessWebhookTest(unittest.TestCase):
         return [p["text"] for m, p in base.TELEGRAM_CALLS if m == "sendMessage"]
 
     def test_inconnu_atteint_claude_sans_prenom_du_proprietaire(self):
-        self.client.post("/webhook", json=base._update("bonjour", user_id=424242, chat_id=424242))
+        self.client.post("/webhook", json=base._update("Une question", user_id=424242, chat_id=424242))
         self.assertEqual(len(base.CLAUDE_CALLS), 1)
         self.assertNotIn("Karim", base.CLAUDE_CALLS[0]["system"])
         self.assertEqual(self.sent()[-1], "Réponse de test")
@@ -101,7 +101,7 @@ class OpenAccessWebhookTest(unittest.TestCase):
         full = ToolRouter(env={"PERPLEXITY_API_KEY": "pplx-fake"})
         public = RestrictedRouter(full, frozenset({"lire_page_web"}))
         with mock.patch.object(bot, "ROUTER", full), mock.patch.object(bot, "PUBLIC_ROUTER", public):
-            self.client.post("/webhook", json=base._update("bonjour", user_id=424242, chat_id=424242))
+            self.client.post("/webhook", json=base._update("Une question", user_id=424242, chat_id=424242))
         names = [t["name"] for t in base.CLAUDE_CALLS[-1].get("tools", [])]
         self.assertEqual(names, ["lire_page_web"])
 

@@ -99,18 +99,18 @@ class WebhookAccessTests(unittest.TestCase):
 
     def test_listed_tester_reaches_claude(self):
         self.use()
-        self.post("bonjour", 777)
+        self.post("Une question", 777)
         self.assertEqual(len(base.CLAUDE_CALLS), 1)
         self.assertEqual(self.sent()[-1], "Réponse de test")
 
     def test_tester_gets_no_owner_first_name(self):
         self.use()
-        self.post("bonjour", 777)
+        self.post("Une question", 777)
         self.assertNotIn("Karim", base.CLAUDE_CALLS[0]["system"])
 
     def test_stranger_never_reaches_claude_and_is_told_once(self):
         self.use(OPEN_ACCESS="0")
-        self.post("bonjour", 999)
+        self.post("Une question", 999)
         self.post("encore moi", 999)
         self.assertEqual(base.CLAUDE_CALLS, [])
         self.assertEqual(len(self.sent()), 1)

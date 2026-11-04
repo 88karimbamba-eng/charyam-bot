@@ -195,31 +195,31 @@ class BotPersistentMemoryTest(unittest.TestCase):
         return [p["text"] for m, p in base.TELEGRAM_CALLS if m == "sendMessage"]
 
     def test_conversation_sauvegardee_puis_rechargee_apres_redemarrage(self):
-        self.post("bonjour")
+        self.post("Une question")
         saved = self.fake.histories[store.history_key(42)]
         self.assertEqual([m["role"] for m in saved], ["user", "assistant"])
         bot.chat_memory.clear()                                   # simule un redémarrage du service
         self.post("la suite")
         contents = [m["content"] for m in base.CLAUDE_CALLS[-1]["messages"]]
-        self.assertEqual(contents, ["bonjour", "Réponse de test", "la suite"])
+        self.assertEqual(contents, ["Une question", "Réponse de test", "la suite"])
 
     def test_panne_du_stockage_ne_coupe_pas_la_conversation(self):
         self.fake.down = True
-        self.post("bonjour")
+        self.post("Une question")
         self.assertEqual(self.sent_texts()[-1], "Réponse de test")
         self.assertEqual(len(bot.chat_memory[42]), 2)             # copie locale conservée
         self.post("encore")                                       # la suite fonctionne aussi
         self.assertEqual(self.sent_texts()[-1], "Réponse de test")
 
     def test_panne_au_rechargement_repart_d_une_conversation_vide(self):
-        self.post("bonjour")
+        self.post("Une question")
         bot.chat_memory.clear()
         self.fake.down = True
         self.post("la suite")
         self.assertEqual([m["content"] for m in base.CLAUDE_CALLS[-1]["messages"]], ["la suite"])
 
     def test_oubli_efface_local_et_persistant(self):
-        self.post("bonjour")
+        self.post("Une question")
         self.post("/oubli")
         self.assertEqual(self.fake.histories, {})
         self.assertNotIn(42, bot.chat_memory)
@@ -229,7 +229,7 @@ class BotPersistentMemoryTest(unittest.TestCase):
         self.assertEqual([m["content"] for m in base.CLAUDE_CALLS[-1]["messages"]], ["nouveau départ"])
 
     def test_oubli_avec_stockage_en_panne_le_dit_honnetement(self):
-        self.post("bonjour")
+        self.post("Une question")
         self.fake.down = True
         self.post("/oubli")
         self.assertEqual(self.sent_texts()[-1], bot.FORGET_PARTIAL_TEXT)
@@ -237,7 +237,7 @@ class BotPersistentMemoryTest(unittest.TestCase):
 
     def test_oubli_sans_stockage_persistant(self):
         with mock.patch.object(bot, "persistent_store", None):
-            self.post("bonjour")
+            self.post("Une question")
             self.post("/oubli")
             self.assertEqual(self.sent_texts()[-1], bot.FORGET_DONE_TEXT)
             self.assertNotIn(42, bot.chat_memory)
@@ -246,7 +246,7 @@ class BotPersistentMemoryTest(unittest.TestCase):
         self.fake.down = True
         with mock.patch.object(bot.access_control, "store", self.fake), \
                 mock.patch.object(bot.access_control, "allowed", frozenset({bot.USER_ID, 777})):
-            self.post("bonjour", user_id=777, chat_id=777)
+            self.post("Une question", user_id=777, chat_id=777)
         self.assertEqual(base.CLAUDE_CALLS, [])                    # aucun appel à Claude
         self.assertIn("momentanément indisponible", self.sent_texts()[-1])
 

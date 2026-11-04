@@ -55,8 +55,8 @@ def boutique_text(has_link: bool) -> str:
     if not has_link:
         return base + "Le lien de la boutique WhatsApp arrive bientôt. Reviens ici dans quelques jours."
     return base + (
-        "1️⃣ Touche le bouton ci-dessous : WhatsApp s'ouvre sur notre boutique.\n"
-        "2️⃣ Choisis tes articles dans le catalogue.\n"
+        "1️⃣ Touche le bouton ci-dessous : WhatsApp s'ouvre sur notre conversation.\n"
+        "2️⃣ Dis-nous quels articles t'intéressent (vêtements, accessoires, savon bio).\n"
         "3️⃣ Tu passes ta commande directement avec nous sur WhatsApp.\n\n"
         "Une question avant de commander ? Écris-la ici."
     )

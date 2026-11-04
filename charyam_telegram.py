@@ -40,7 +40,7 @@ import cv_questionnaire
 import payments
 import store as store_module
 from integrations.common import redact_secrets
-from integrations.tool_router import ToolRouter, complete_with_tools
+from integrations.tool_router import RestrictedRouter, ToolRouter, complete_with_tools
 
 
 def _env_int(name: str, default: int, minimum: int, maximum: int) -> int:
@@ -165,6 +165,8 @@ logger = logging.getLogger("charyam")
 
 # Outils externes : aucun n'est exposé à Claude tant que sa configuration est incomplète
 ROUTER = ToolRouter()
+# Personnes hors liste : lecture de page seulement (ni recherche payante, ni applications du propriétaire)
+PUBLIC_ROUTER = RestrictedRouter(ROUTER, frozenset({"lire_page_web"}))
 
 
 def _idna_codec_works() -> bool:
@@ -960,7 +962,7 @@ def trim_history(messages: list) -> list:
 
 # ---------------------------------------------------------------- Claude
 
-def _call_claude(messages: list, system: str, max_tokens: int):
+def _call_claude(messages: list, system: str, max_tokens: int, router=None):
     """Appel unique à l'API Anthropic. Si le réglage CLAUDE_THINKING est refusé (400),
     on le désactive pour la suite et on réessaie sans lui."""
     global _thinking_rejected
@@ -970,17 +972,18 @@ def _call_claude(messages: list, system: str, max_tokens: int):
         "system": system,
         "messages": messages,
     }
+    router = router or ROUTER
     use_thinking = THINKING_PARAM is not None and not _thinking_rejected
     if use_thinking:
         kwargs["extra_body"] = {"thinking": THINKING_PARAM}
     try:
-        return complete_with_tools(lambda **kw: client.messages.create(**kw), kwargs, ROUTER)
+        return complete_with_tools(lambda **kw: client.messages.create(**kw), kwargs, router)
     except anthropic.BadRequestError as e:
         if use_thinking and "thinking" in str(e).lower():
             _thinking_rejected = True
             logger.warning("Réglage CLAUDE_THINKING refusé par l'API : désactivé (%s)", redact(e))
             kwargs.pop("extra_body", None)
-            return complete_with_tools(lambda **kw: client.messages.create(**kw), kwargs, ROUTER)
+            return complete_with_tools(lambda **kw: client.messages.create(**kw), kwargs, router)
         raise
 
 
@@ -1073,9 +1076,10 @@ def get_claude_response(user_id: int, chat_id: int, user_message: str, first_nam
         _load_history(chat_id) + [{"role": "user", "content": user_message}]
     )
     system = build_system_prompt(first_name, chat_modes.get(chat_id))
+    router = ROUTER if access_control.is_listed(user_id) else PUBLIC_ROUTER
 
     try:
-        response = _call_claude(messages, system, MAX_TOKENS)
+        response = _call_claude(messages, system, MAX_TOKENS, router)
         text, stop_reason = _read_response(response)
 
         # La réflexion a pu consommer tout le budget avant le texte : un seul nouvel essai, plus large
@@ -1083,7 +1087,7 @@ def get_claude_response(user_id: int, chat_id: int, user_message: str, first_nam
             logger.warning(
                 "Aucun texte (budget épuisé) : nouvel essai avec max_tokens=%s", RETRY_MAX_TOKENS
             )
-            response = _call_claude(messages, system, RETRY_MAX_TOKENS)
+            response = _call_claude(messages, system, RETRY_MAX_TOKENS, router)
             text, stop_reason = _read_response(response)
 
         if not text:

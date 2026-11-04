@@ -110,6 +110,10 @@ class BotTest(unittest.TestCase):
         self.assertEqual(self.sent()[-1]["text"], "Réponse de test")
 
     def test_utilisateur_non_autorise_ignore(self):
+        # Mode fermé (OPEN_ACCESS=0) : l'accès ouvert est testé dans tests/test_access.py
+        old = bot.access_control.open_access
+        bot.access_control.open_access = False
+        self.addCleanup(setattr, bot.access_control, "open_access", old)
         self.post("bonjour", user_id=1)
         self.assertEqual(CLAUDE_CALLS, [])
         # Claude n'est jamais appelé ; l'inconnu reçoit seulement un court message avec son identifiant

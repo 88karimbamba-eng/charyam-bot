@@ -109,7 +109,7 @@ class WebhookAccessTests(unittest.TestCase):
         self.assertNotIn("Karim", base.CLAUDE_CALLS[0]["system"])
 
     def test_stranger_never_reaches_claude_and_is_told_once(self):
-        self.use()
+        self.use(OPEN_ACCESS="0")
         self.post("bonjour", 999)
         self.post("encore moi", 999)
         self.assertEqual(base.CLAUDE_CALLS, [])

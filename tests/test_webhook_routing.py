@@ -134,6 +134,9 @@ class WebhookRoutingTest(unittest.TestCase):
         self.assertEqual(len(script.calls), 1)
         base.TELEGRAM_CALLS.clear()
         script2 = Scripted(reply(text("x")))
+        old = bot.access_control.open_access
+        bot.access_control.open_access = False      # mode fermé (OPEN_ACCESS=0)
+        self.addCleanup(setattr, bot.access_control, "open_access", old)
         with mock.patch.object(bot.client.messages, "create", script2):
             self.client.post("/webhook", json=base._update("Cherche", user_id=1))
         self.assertEqual(script2.calls, [])

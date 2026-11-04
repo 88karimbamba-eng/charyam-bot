@@ -29,6 +29,7 @@ import traceback
 import importlib.metadata
 from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import TimeoutError as FuturesTimeout
 
 import anthropic
 import httpx
@@ -121,6 +122,10 @@ client = anthropic.Anthropic(
 )
 telegram_http = httpx.Client(timeout=httpx.Timeout(20.0, connect=10.0))
 executor = ThreadPoolExecutor(max_workers=WORKER_THREADS, thread_name_prefix="charyam")
+# Les compteurs de quotas passent par le stockage distant : on les isole dans un petit groupe de fils, avec un
+# délai maximal, pour qu'un stockage lent ou bloqué ne gèle jamais le traitement des messages.
+QUOTA_TIMEOUT_SECONDS = 10.0
+quota_executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="quota")
 
 # Mémoire par chat : cache local en RAM (perdu à chaque redémarrage). Si le stockage persistant est
 # configuré, la conversation y est aussi sauvegardée (7 jours) et rechargée après un redémarrage.
@@ -1177,6 +1182,34 @@ def _send_notice(chat_id: int, text: str):
         logger.error("Erreur envoi information (%s): %s", type(e).__name__, redact(e))
 
 
+def _check_rate_bounded(user_id: int):
+    """Vérifie les quotas avec un délai maximal. Retourne (autorisé, type de refus).
+    Stockage lent ou bloqué : refus clair (« indisponible »), jamais de silence ni de blocage."""
+    future = quota_executor.submit(access_control.check_rate, user_id)
+    try:
+        return future.result(timeout=QUOTA_TIMEOUT_SECONDS)
+    except FuturesTimeout:
+        logger.error("Quotas : pas de réponse du stockage en %s s, message refusé", QUOTA_TIMEOUT_SECONDS)
+    except Exception as e:
+        logger.error("Quotas : erreur inattendue (%s): %s", type(e).__name__, redact(e))
+    return False, "indisponible"
+
+
+def _dispatch(user_id: int, chat_id: int, text: str, message_id: int):
+    """Travail d'un message accepté, hors de la requête Telegram : quotas, puis traitement.
+    Telegram a déjà reçu sa réponse : il ne renvoie donc plus le message à cause d'une lenteur."""
+    try:
+        allowed_now, limit_kind = _check_rate_bounded(user_id)
+        if not allowed_now:
+            logger.info("Message refusé: limite par %s atteinte (%s)", limit_kind, user_id)
+            if access_control.should_notify(user_id, "limite-" + limit_kind):
+                _send_notice(chat_id, access.rate_limit_text(limit_kind))
+            return
+        process_message(user_id, chat_id, text, message_id)
+    except Exception as e:
+        logger.error("Erreur traitement du message (%s): %s", type(e).__name__, redact(e))
+
+
 def process_message(user_id: int, chat_id: int, text: str, message_id: int):
     """Traite un message en arrière-plan : une conversation à la fois, erreurs isolées"""
     with _get_chat_lock(chat_id):
@@ -1315,16 +1348,11 @@ def webhook():
             logger.info("Mise à jour déjà traitée, ignorée")
             return jsonify({"ok": True})
 
-        allowed_now, limit_kind = access_control.check_rate(user_id)
-        if not allowed_now:
-            logger.info("Message refusé: limite par %s atteinte (%s)", limit_kind, user_id)
-            if access_control.should_notify(user_id, "limite-" + limit_kind):
-                executor.submit(_send_notice, chat_id, access.rate_limit_text(limit_kind))
-            return jsonify({"ok": True})
-
-        # Le contenu des messages n'est jamais écrit dans les journaux
+        # Le contenu des messages n'est jamais écrit dans les journaux. Cette ligne est écrite AVANT tout
+        # traitement : si un message disparaît, on voit au moins qu'il est arrivé.
         logger.info("Message reçu de %s (%s caractères)", user_id, len(text))
-        executor.submit(process_message, user_id, chat_id, text, message_id)
+        # Réponse immédiate à Telegram : quotas et traitement se font en arrière-plan (voir _dispatch)
+        executor.submit(_dispatch, user_id, chat_id, text, message_id)
         return jsonify({"ok": True})
     except Exception as e:
         logger.error("Erreur webhook (%s): %s", type(e).__name__, redact(e))

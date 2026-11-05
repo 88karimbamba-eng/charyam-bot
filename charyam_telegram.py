@@ -638,10 +638,8 @@ def handle_menu(chat_id: int, text: str):
     if text.strip() == BUTTON_VOLET_CV:
         return guide.cv_volet_text(payment_gate.instructions, BUTTON_CV, BUTTON_LETTRE, BUTTON_TARIFS), MENU_KEYBOARD
     if text.strip() == BUTTON_EBOOKS:
-        return (
-            boutique.ebooks_text(bool(CHARIOW_STORE_URL)),
-            boutique.link_keyboard(boutique.BUTTON_LABEL_EBOOKS, CHARIOW_STORE_URL) or MENU_KEYBOARD,
-        )
+        ebooks_message, ebooks_keyboard = boutique.ebooks_menu(CHARIOW_STORE_URL)
+        return ebooks_message, ebooks_keyboard or MENU_KEYBOARD
     if text.strip() == BUTTON_BOUTIQUE:
         return (
             boutique.boutique_text(bool(WHATSAPP_SHOP_URL)),

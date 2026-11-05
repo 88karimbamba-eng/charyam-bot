@@ -26,10 +26,12 @@ le résultat réel est dans `snapshot()` (accepted, rejected, failed…).
 """
 
 import datetime
+import email.utils
 import hashlib
 import hmac
 import json
 import logging
+import math
 import os
 import threading
 import time
@@ -93,7 +95,7 @@ def _leaks_identifier(payload: dict, user_id) -> bool:
 
 
 class UsageAnalytics:
-    def __init__(self, env=None, http=None, executor=None, sleep=time.sleep, clock=time.monotonic):
+    def __init__(self, env=None, http=None, executor=None, sleep=time.sleep, clock=time.monotonic, wall_clock=None):
         source = os.environ if env is None else env
         self.api_key = (source.get("POSTHOG_API_KEY") or "").strip()
         host = (source.get("POSTHOG_HOST") or DEFAULT_HOST).strip().rstrip("/")
@@ -105,6 +107,7 @@ class UsageAnalytics:
         self._executor = executor
         self._sleep = sleep
         self._clock = clock
+        self._wall_clock = wall_clock or (lambda: datetime.datetime.now(datetime.timezone.utc))
         self._pending = 0
         self._lock = threading.Lock()
         self._auth_failed = False
@@ -189,14 +192,16 @@ class UsageAnalytics:
             self._pending = max(0, self._pending - 1)
 
     def _get_executor(self):
-        if self._executor is None:
-            self._executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="analytics")
-        return self._executor
+        with self._lock:   # création unique, même si plusieurs fils tracent en même temps
+            if self._executor is None:
+                self._executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="analytics")
+            return self._executor
 
     def _get_http(self):
-        if self._http is None:
-            self._http = httpx.Client(timeout=httpx.Timeout(REQUEST_TIMEOUT_SECONDS, connect=REQUEST_TIMEOUT_SECONDS))
-        return self._http
+        with self._lock:
+            if self._http is None:
+                self._http = httpx.Client(timeout=httpx.Timeout(REQUEST_TIMEOUT_SECONDS, connect=REQUEST_TIMEOUT_SECONDS))
+            return self._http
 
     def _post_once(self, payload: dict):
         """Un envoi. Retourne (statut HTTP ou None si erreur réseau, valeur de Retry-After ou None)."""
@@ -213,20 +218,47 @@ class UsageAnalytics:
             pass
         return status, retry_after
 
-    @staticmethod
-    def _delay(attempt: int, retry_after) -> float:
-        base = BACKOFF_SECONDS[min(attempt - 1, len(BACKOFF_SECONDS) - 1)]
+    def _retry_after_seconds(self, retry_after):
+        """Retry-After en secondes : nombre (« 3 », « 1.5 ») ou date HTTP (« Wed, 21 Oct 2026 07:28:00 GMT »).
+        None si l'en-tête est absent, illisible, infini, NaN ou déjà dépassé (négatif)."""
+        if retry_after is None:
+            return None
+        text = str(retry_after).strip()
+        if not text:
+            return None
         try:
-            asked = float(retry_after)
-        except (TypeError, ValueError):
+            seconds = float(text)
+        except ValueError:
+            try:
+                moment = email.utils.parsedate_to_datetime(text)
+                if moment.tzinfo is None:
+                    moment = moment.replace(tzinfo=datetime.timezone.utc)
+                seconds = (moment - self._wall_clock()).total_seconds()
+            except Exception:
+                return None
+        if not math.isfinite(seconds):
+            return None
+        return max(seconds, 0.0)
+
+    def _delay(self, attempt: int, retry_after) -> float:
+        """Attente avant la nouvelle tentative : au moins le délai de base, au plus MAX_RETRY_AFTER_SECONDS
+        si PostHog demande plus long (le fil d'arrière-plan ne doit pas être bloqué longtemps)."""
+        base = BACKOFF_SECONDS[min(attempt - 1, len(BACKOFF_SECONDS) - 1)]
+        asked = self._retry_after_seconds(retry_after)
+        if asked is None:
             return base
-        return max(base, min(max(asked, 0.0), MAX_RETRY_AFTER_SECONDS))
+        return max(base, min(asked, MAX_RETRY_AFTER_SECONDS))
 
     def _send(self, payload: dict) -> str:
-        """Envoie avec nouvelles tentatives limitées. Retourne « accepted », « rejected » ou « failed »."""
+        """Envoie avec nouvelles tentatives limitées. Retourne « accepted », « rejected », « failed » ou « dropped » (mesure suspendue)."""
         outcome, reason, attempts = "failed", "erreur réseau", 0
         try:
             for attempt in range(1, MAX_ATTEMPTS + 1):
+                if self._auth_failed:
+                    # Clé refusée entre-temps (par cet envoi ou un autre) : on n'envoie plus rien,
+                    # y compris les événements déjà en file d'attente.
+                    outcome, reason = "dropped", "mesure suspendue"
+                    break
                 attempts = attempt
                 status, retry_after = self._post_once(payload)
                 if status is not None and 200 <= status < 300:
@@ -234,7 +266,8 @@ class UsageAnalytics:
                     break
                 reason = "erreur réseau" if status is None else "HTTP %d" % status
                 if status in AUTH_STATUSES:
-                    self._auth_failed = True
+                    with self._lock:
+                        self._auth_failed = True
                 transient = status is None or status in TRANSIENT_STATUSES or 500 <= status < 600
                 if not transient:
                     outcome = "rejected"      # 400, 401, 403… : définitif, on ne retente pas
@@ -248,7 +281,7 @@ class UsageAnalytics:
         finally:
             self._count(outcome)
             self._release_pending()
-        if outcome != "accepted":
+        if outcome not in ("accepted", "dropped"):
             self._log_failure(payload.get("event"), outcome, reason, attempts)
         return outcome
 

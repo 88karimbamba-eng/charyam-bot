@@ -30,7 +30,7 @@ Liste fermée : tout autre nom est refusé par le code.
 
 | Événement | Quand | Propriétés |
 |---|---|---|
-| `menu_used` | un bouton ou une commande du menu est utilisé | `kind` (ex. `ebooks`, `aide`, `start`) |
+| `menu_used` | un bouton ou une commande du menu est utilisé | `kind` : valeur d'une liste fermée (`ebooks`, `aide`, `start`, `mode_…`…) ; toute commande inconnue (ex. un numéro tapé après « / ») devient `commande_autre` |
 | `cv_questionnaire_reply` | le client répond au questionnaire CV | `done` (vrai à la dernière étape) |
 | `ai_reply_sent` | une réponse de Claude est envoyée | `cv` (vrai si c'est le CV rédigé) |
 | `export_requested` | bouton Word ou PDF touché | `format` |
@@ -57,8 +57,11 @@ en clair, et ignore toute propriété hors liste blanche.
 ## Fiabilité des envois
 - L'envoi se fait en arrière-plan avec un délai court : il ne retarde jamais la réponse au client.
 - PostHog répond 2xx : événement **accepté**. 429, 5xx, 408 et erreurs réseau : jusqu'à 3 tentatives au total
-  (attentes de 0,5 s puis 1,5 s, ou `Retry-After` plafonné à 5 s). 400, 401, 403 et autres erreurs : **définitif**, pas de nouvelle tentative.
-- Une clé refusée (401/403) **suspend** la mesure jusqu'au redémarrage du service.
+  (attentes de 0,5 s puis 1,5 s, ou `Retry-After` plafonné à 5 s ; l'en-tête peut être un nombre de secondes ou une date HTTP ;
+  valeur illisible, infinie, négative ou déjà dépassée : délai de base). Attente totale maximale par événement : 10 s, dans un fil
+  d'arrière-plan. 400, 401, 403 et autres erreurs : **définitif**, pas de nouvelle tentative.
+- Une clé refusée (401/403) **suspend** la mesure jusqu'au redémarrage du service : plus aucun nouvel événement n'est mis en file,
+  et les événements déjà en attente sont abandonnés (compteur `dropped`) sans être envoyés.
 - Les échecs sont journalisés (nom d'événement, issue, code HTTP) sans clé, sans secret, sans identifiant ni contenu ;
   un même échec n'est journalisé en avertissement qu'une fois toutes les 5 minutes.
 - `capture()` renvoie « vrai » quand l'événement est **mis en file**, pas quand PostHog l'a accepté. Le résultat réel est dans
@@ -70,3 +73,6 @@ en clair, et ignore toute propriété hors liste blanche.
   longue de PostHog, des événements sont abandonnés plutôt que gardés.
 - Le bot reste sur un seul processus ; plusieurs instances auraient chacune leurs compteurs.
 - Non vérifié contre le vrai PostHog depuis cet environnement : les tests simulent ses réponses. À contrôler après activation.
+
+## Test réel contrôlé
+Voir `docs/TEST_REEL_POSTHOG.md` (projet PostHog de test, identifiants fictifs, aucun client réel).

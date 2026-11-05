@@ -653,7 +653,8 @@ def _menu_kind_unsafe(text: str) -> str:
     stripped = text.strip()
     command = stripped.split()[0].split("@")[0].lower() if stripped else ""
     if command.startswith("/"):
-        return command[1:13] or "commande"
+        # Liste blanche : jamais le texte tapé par le client (« /0612345678 » ne doit pas partir vers PostHog)
+        return command[1:] if command in MENU_COMMANDS else "commande_autre"
     if guide.is_greeting(text):
         return "salutation"
     names = {

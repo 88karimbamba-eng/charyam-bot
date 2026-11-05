@@ -14,6 +14,8 @@ SECRET_ENV_NAMES = (
     "FIRECRAWL_API_KEY",
     "COMPOSIO_API_KEY",
     "PLAYWRIGHT_CDP_URL",  # peut contenir un jeton d'accès au navigateur distant
+    "POSTHOG_API_KEY",     # mesure d'usage : clé projet PostHog
+    "POSTHOG_SALT",        # mesure d'usage : secret de pseudonymisation
 )
 
 MAX_RESULT_CHARS = 12000          # taille maximale d'un résultat renvoyé à Claude

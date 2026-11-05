@@ -40,31 +40,36 @@ BUTTON_LABEL_BOUTIQUE = "🛍️ Ouvrir la boutique WhatsApp"
 # modifier cette liste (un lien qui n'est pas un https complet est ignoré, jamais remplacé).
 EBOOKS = (
     {
+        "emoji": "🇬🇧",
         "titre": "1000 Mots pour apprendre l'anglais",
-        "bouton": "1️⃣ 1000 Mots d'anglais",
-        "description": "Plus de 1000 mots essentiels en 27 thèmes du quotidien, avec traduction et exemples. "
-                       "Pour les débutants, lisible sur téléphone.",
+        "bouton": "🛒 Acheter : 1000 Mots d'anglais",
+        "description": "Parle anglais sans cours compliqués. Plus de 1000 mots essentiels en 27 thèmes du quotidien "
+                       "(famille, travail, voyages, argent…), avec traduction et exemples, à lire sur ton téléphone.",
         "url": "https://zsykaits.mychariow.shop/prd_6rbfwkby",
     },
     {
+        "emoji": "⌨️",
         "titre": "Raccourcis Word & Excel : le guide de poche",
-        "bouton": "2️⃣ Raccourcis Word & Excel",
-        "description": "Plus de 100 raccourcis clavier classés par situation, et une fiche de 30 raccourcis à imprimer. "
-                       "Pour les étudiants, les candidats à un emploi et les employés de bureau.",
+        "bouton": "🛒 Acheter : Raccourcis Word & Excel",
+        "description": "Gagne du temps à chaque document. Plus de 100 raccourcis classés par situation, "
+                       "plus une fiche de 30 raccourcis à imprimer. Idéal pour les étudiants, les candidats à un emploi "
+                       "et les employés de bureau.",
         "url": "https://zsykaits.mychariow.shop/prd_5g9kzjwv",
     },
     {
+        "emoji": "🚗",
         "titre": "Le Guide Complet du Code de la Route",
-        "bouton": "3️⃣ Code de la Route (CI)",
-        "description": "Le code de la route ivoirien en français simple : 17 chapitres, le permis à points, "
-                       "115 QCM corrigés et un examen blanc de 25 questions. Pour les candidats au permis.",
+        "bouton": "🛒 Acheter : Code de la Route (CI)",
+        "description": "Prépare ton code de la route en français simple. 17 chapitres, le permis à points, "
+                       "115 QCM corrigés et un examen blanc de 25 questions pour tester ton niveau.",
         "url": "https://zsykaits.mychariow.shop/prd_0bvt51bh",
     },
     {
+        "emoji": "🍲",
         "titre": "Gastronomie ivoirienne : 90 plats pour 90 jours",
-        "bouton": "4️⃣ Gastronomie ivoirienne",
-        "description": "Un plat ivoirien par jour pendant 90 jours : ingrédients, quantités, étapes détaillées, "
-                       "astuces et un QCM pour tester ses connaissances.",
+        "bouton": "🛒 Acheter : Gastronomie ivoirienne",
+        "description": "Un plat ivoirien par jour pendant 90 jours. Pour chaque plat : ingrédients, quantités, "
+                       "étapes détaillées, astuces et un QCM pour tester ce que tu as appris.",
         "url": "https://zsykaits.mychariow.shop/prd_2j838h8j",
     },
 )
@@ -83,14 +88,14 @@ def ebooks_menu(store_url: str):
     store_url = clean_url(store_url)
     if not items:
         return ebooks_text(bool(store_url)), link_keyboard(BUTTON_LABEL_EBOOKS, store_url)
-    lines = ["📚 Nos ebooks\n"]
+    lines = ["📚 Nos ebooks AFRICA MINDSET\nChoisis celui qui te convient 👇\n"]
     rows = []
-    for number, item in enumerate(items, start=1):
-        lines.append(f"{number}. {item['titre']}\n{item['description']}\n")
+    for item in items:
+        lines.append(f"{item.get('emoji', '📘')} {item['titre']}\n{item['description']}\n")
         rows.append([{"text": item["bouton"], "url": clean_url(item["url"])}])
     if store_url:
         rows.append([{"text": BUTTON_LABEL_EBOOKS, "url": store_url}])
-    lines.append("Touche le bouton de l'ebook qui t'intéresse. Le prix est affiché sur sa page. "
+    lines.append("Touche « Acheter » sous l'ebook qui t'intéresse : le prix est affiché sur sa page. "
                  "Le paiement et la livraison se font sur la page de la boutique, pas dans ce chat.\n\n"
                  "Une question sur un ebook ? Écris-la ici.")
     return "\n".join(lines), {"inline_keyboard": rows}

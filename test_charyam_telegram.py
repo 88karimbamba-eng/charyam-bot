@@ -125,7 +125,10 @@ class BotTest(unittest.TestCase):
         self.assertEqual(CLAUDE_CALLS, [])
         message = self.sent()[-1]
         self.assertEqual(message["reply_markup"], bot.MENU_KEYBOARD)
-        self.assertIn(bot.BUTTON_EMPLOI, message["text"])
+        self.assertIn(bot.BUTTON_CV, message["text"])
+        for label in (bot.BUTTON_EMPLOI, bot.BUTTON_DOCUMENTS):
+            self.assertNotIn(label, message["text"])
+        self.assertNotIn("devis", message["text"].lower())
 
     def test_commande_avec_nom_du_bot(self):
         self.post("/menu@CharyamBot")
@@ -143,24 +146,34 @@ class BotTest(unittest.TestCase):
         self.assertEqual(CLAUDE_CALLS, [])
         self.assertIn("/menu", self.sent()[-1]["text"])
 
-    def test_bouton_emploi_puis_question(self):
-        self.post(bot.BUTTON_EMPLOI)
+    def test_bouton_lettre_puis_question(self):
+        self.post(bot.BUTTON_LETTRE)
         self.assertEqual(CLAUDE_CALLS, [])
         self.assertEqual(bot.chat_modes[42], bot.MODE_EMPLOI)
         self.post("Analyse cette offre")
         system = CLAUDE_CALLS[-1]["system"]
-        self.assertIn("Emploi & Candidatures", system)
+        self.assertIn("CV & Lettre de motivation", system)
         self.assertIn("Hypothèses", system)
         # Le libellé du bouton n'entre pas dans l'historique envoyé à Claude
         self.assertEqual(CLAUDE_CALLS[-1]["messages"], [{"role": "user", "content": "Analyse cette offre"}])
 
-    def test_bouton_documents(self):
-        self.post(bot.BUTTON_DOCUMENTS)
-        self.post("Fais un devis")
-        self.assertIn("[à compléter]", CLAUDE_CALLS[-1]["system"])
+    def test_menu_sans_emploi_ni_documents(self):
+        labels = [button["text"] for row in bot.MENU_KEYBOARD["keyboard"] for button in row]
+        self.assertNotIn(bot.BUTTON_EMPLOI, labels)
+        self.assertNotIn(bot.BUTTON_DOCUMENTS, labels)
+        for text in (bot.MENU_TEXT, bot.HELP_TEXT):
+            self.assertNotIn("devis", text.lower())
+            self.assertNotIn("facture", text.lower())
+
+    def test_ancien_bouton_renvoie_au_volet_cv(self):
+        for label in (bot.BUTTON_EMPLOI, bot.BUTTON_DOCUMENTS):
+            self.post(label)
+            self.assertEqual(CLAUDE_CALLS, [])
+            self.assertIn("CV et lettre de motivation", self.sent()[-1]["text"])
+            self.assertEqual(self.sent()[-1]["reply_markup"], bot.MENU_KEYBOARD)
 
     def test_activites_separees_par_chat(self):
-        self.post(bot.BUTTON_EMPLOI, chat_id=1)
+        self.post(bot.BUTTON_LETTRE, chat_id=1)
         self.post("question", chat_id=2)
         self.assertNotIn("Activité en cours", CLAUDE_CALLS[-1]["system"])
 
@@ -214,10 +227,10 @@ class BotTest(unittest.TestCase):
         self.assertTrue(content.startswith(b"%PDF"))
 
     def test_nom_du_fichier_selon_l_activite(self):
-        self.post(bot.BUTTON_DOCUMENTS)
+        self.post(bot.BUTTON_LETTRE)
         self.ask()
         self.post(bot.BUTTON_WORD)
-        self.assertTrue(DOCUMENT_CALLS[0]["files"]["document"][0].startswith("Document_professionnel_"))
+        self.assertTrue(DOCUMENT_CALLS[0]["files"]["document"][0].startswith("CV_et_lettre_de_motivation_"))
 
     def test_export_sans_reponse_recente(self):
         self.post(bot.BUTTON_PDF)
@@ -263,8 +276,8 @@ class BotTest(unittest.TestCase):
         self.assertNotIn("envoyé", text)
 
     def test_les_consignes_ne_promettent_plus_de_fichier_direct(self):
-        self.post(bot.BUTTON_DOCUMENTS)
-        self.post("devis")
+        self.post(bot.BUTTON_LETTRE)
+        self.post("lettre")
         system = CLAUDE_CALLS[-1]["system"]
         self.assertNotIn("tu ne peux pas encore envoyer", system)
         self.assertIn("n'affirme jamais l'avoir fait", system)

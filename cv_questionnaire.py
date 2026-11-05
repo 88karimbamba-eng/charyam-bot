@@ -226,7 +226,7 @@ def build_generation_prompt(answers: dict) -> str:
     labels = {key: title for key, title, _q, _r in STEPS}
     lines = [
         "Le questionnaire CV est terminé. Voici les réponses de la personne, étape par étape. "
-        "Rédige maintenant son CV complet, entre [[CV]] et [[/CV]], selon les règles de l'activité en cours.",
+        "Rédige maintenant son CV complet, entre [[CV]] et [[/CV]], selon les règles de l'activité en cours et la formule de rédaction du CV.",
         "Règles : n'invente rien ; écris [à compléter] pour toute information manquante (ne devine ni date, "
         "ni employeur, ni chiffre) ; reprends les chiffres exactement comme donnés ; rédige le profil "
         "toi-même seulement avec les faits fournis si l'étape Profil est vide ; vise 1 à 2 pages pleines ; "

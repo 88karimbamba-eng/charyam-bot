@@ -130,19 +130,10 @@ class ExportTest(unittest.TestCase):
         bot.last_answers[7] = "# Lettre\n\nBonjour,\n\n[[SCORE]]\n✅ a\n✅ b\n❌ c\n[[/SCORE]]"
         name, data = bot.build_export(7, "docx")
         document, _ = self.docx_xml(data)
-        self.assertIn("Candidature", document)               # titre automatique du thème « document »
+        self.assertIn("CV et lettre de motivation", document)               # titre automatique du thème « document »
         self.assertIn("Bonjour", document)
         self.assertNotIn("✅", document)                      # le bloc de score n'entre jamais dans le fichier
         self.assertNotIn("[[", document)
-
-    def test_mode_documents_inchange(self):
-        bot.chat_modes[7] = bot.MODE_DOCUMENTS
-        bot.last_answers[7] = "# Devis\n\n| A | B |\n|---|---|\n| 1 | 2 |"
-        _, data = bot.build_export(7, "docx")
-        document, _ = self.docx_xml(data)
-        self.assertIn("Document professionnel", document)
-        self.assertIn("<w:tbl>", document)                    # les tableaux restent permis hors CV
-
 
 class PromptTest(unittest.TestCase):
     def test_consigne_emploi_contient_les_regles_ats_et_score(self):
@@ -151,8 +142,21 @@ class PromptTest(unittest.TestCase):
                        "N'ajoute jamais au CV"):
             self.assertIn(needle, prompt)
 
+    def test_formule_de_redaction_du_cv(self):
+        prompt = bot.build_system_prompt("Karim", bot.MODE_EMPLOI)
+        for needle in ("FORMULE DE RÉDACTION DU CV", "verbe d'action", "À chiffrer", "1 page pour un débutant",
+                       "Pas de photo ni d'état civil", "seulement si la personne l'a donné"):
+            if needle == "seulement si la personne l'a donné":
+                needle = "n'apparaît que si la personne l'a donné"
+            self.assertIn(needle, prompt)
+
+    def test_perimetre_cv_et_lettre_seulement(self):
+        prompt = bot.build_system_prompt("Karim", None).lower()
+        for word in ("devis", "facture", "courrier", "entretien"):
+            self.assertNotIn(word, prompt)
+
     def test_autre_mode_sans_balises(self):
-        self.assertNotIn("[[CV]]", bot.build_system_prompt("Karim", bot.MODE_DOCUMENTS))
+        self.assertNotIn("[[CV]]", bot.build_system_prompt("Karim", None))
 
 
 if __name__ == "__main__":

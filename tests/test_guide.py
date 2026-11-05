@@ -28,7 +28,7 @@ class GreetingTest(unittest.TestCase):
             self.assertFalse(guide.is_greeting(text), text)
 
     def test_sans_prix_invente(self):
-        text = guide.welcome_text("", "A", "B", "C", "D", "E", "F", "G")
+        text = guide.welcome_text("", "A", "B", "C", "D", "E")
         self.assertNotIn("FCFA", text)
         self.assertIn("administrateur", text)
 
@@ -60,8 +60,11 @@ class JourneyTest(unittest.TestCase):
         self.assertIn("Bienvenue", text)
         self.assertIn("4 étapes", text)
         self.assertIn(INSTRUCTIONS, text)                       # tarifs officiels, tels quels
-        for label in (bot.BUTTON_CV, bot.BUTTON_LETTRE, bot.BUTTON_EMPLOI, bot.BUTTON_DOCUMENTS):
+        for label in (bot.BUTTON_CV, bot.BUTTON_LETTRE):
             self.assertIn(label, text)
+        for label in (bot.BUTTON_EMPLOI, bot.BUTTON_DOCUMENTS):
+            self.assertNotIn(label, text)
+        self.assertNotIn("devis", text.lower())
         self.assertEqual(sent[0]["reply_markup"], bot.MENU_KEYBOARD)
 
     def test_start_donne_le_meme_accueil(self):
@@ -124,7 +127,7 @@ class JourneyTest(unittest.TestCase):
         self.assertEqual(last["reply_markup"], bot.MENU_KEYBOARD)
 
     def test_pas_d_etape_suivante_sans_cv(self):
-        bot.process_message(CLIENT, CLIENT, bot.BUTTON_EMPLOI, 1)
+        bot.process_message(CLIENT, CLIENT, bot.BUTTON_LETTRE, 1)
         bot.process_message(CLIENT, CLIENT, "Analyse cette offre", 2)
         self.assertNotIn("Prochaine étape", self.messages()[-1]["text"])
 

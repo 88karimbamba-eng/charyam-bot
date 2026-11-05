@@ -59,8 +59,8 @@ def tariffs_block(instructions: str) -> str:
     return "Tarifs et paiement :\n" + instructions
 
 
-def welcome_text(instructions: str, button_cv: str, button_lettre: str, button_emploi: str,
-                 button_documents: str, button_volet_cv: str, button_ebooks: str, button_boutique: str) -> str:
+def welcome_text(instructions: str, button_cv: str, button_lettre: str,
+                 button_volet_cv: str, button_ebooks: str, button_boutique: str) -> str:
     return (
         "Bonjour 👋 Bienvenue chez CHARYAM BOUTIQUE.\n"
         "Je t'accompagne pas à pas. Voici ce que tu peux faire ici, touche un bouton 👇\n\n"
@@ -68,9 +68,7 @@ def welcome_text(instructions: str, button_cv: str, button_lettre: str, button_e
         + STEPS_TEXT + "\n"
         + tariffs_block(instructions) + "\n"
         f"{button_cv} : je te pose 8 questions, puis je rédige ton CV.\n"
-        f"{button_lettre} : une lettre adaptée à ton offre.\n"
-        f"{button_emploi} : analyse d'offre, email de candidature, entretien.\n"
-        f"{button_documents} : courrier, devis, facture, rapport.\n\n"
+        f"{button_lettre} : une lettre adaptée à ton offre.\n\n"
         f"📚 2. Ebooks ({button_ebooks}) : nos ebooks en vente sur notre boutique en ligne.\n\n"
         f"🛍️ 3. Vêtements, accessoires et savon bio ({button_boutique}) : notre boutique sur WhatsApp."
     )

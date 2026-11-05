@@ -42,6 +42,7 @@ import boutique
 import guide
 import payments
 import store as store_module
+import usage_analytics
 from integrations.common import redact_secrets
 from integrations.tool_router import RestrictedRouter, ToolRouter, complete_with_tools
 
@@ -106,6 +107,14 @@ payment_gate = payments.PaymentGate(
 
 # Questionnaire « CV intelligent » : progression par chat (mémoire locale + stockage persistant si présent)
 cv_flow = cv_questionnaire.CvFlow(persistent_store)
+
+# Mesure d'usage anonyme PostHog (facultative : sans POSTHOG_API_KEY, rien n'est envoyé). Voir usage_analytics.py.
+usage = usage_analytics.UsageAnalytics(salt=TELEGRAM_TOKEN)
+
+
+def _track(event: str, user_id, **properties):
+    """Mesure anonyme : marque le propriétaire (pour le filtrer dans PostHog) ; ne lève jamais d'exception."""
+    usage.capture(event, user_id, is_owner=(user_id == USER_ID), **properties)
 
 # Validation au démarrage
 if not TELEGRAM_TOKEN:
@@ -625,6 +634,25 @@ def welcome_message() -> str:
         payment_gate.instructions, BUTTON_CV, BUTTON_LETTRE, BUTTON_EMPLOI, BUTTON_DOCUMENTS,
         BUTTON_VOLET_CV, BUTTON_EBOOKS, BUTTON_BOUTIQUE,
     )
+
+
+def _menu_kind(text: str) -> str:
+    """Nom court et fixe de l'élément de menu utilisé (jamais le texte du client)."""
+    stripped = text.strip()
+    command = stripped.split()[0].split("@")[0].lower() if stripped else ""
+    if command.startswith("/"):
+        return command[1:13] or "commande"
+    if guide.is_greeting(text):
+        return "salutation"
+    names = {
+        BUTTON_EBOOKS: "ebooks", BUTTON_BOUTIQUE: "boutique", BUTTON_LETTRE: "lettre",
+        BUTTON_TARIFS: "tarifs", BUTTON_AIDE: "aide", BUTTON_VOLET_CV: "volet_cv",
+    }
+    if stripped in names:
+        return names[stripped]
+    if stripped in BUTTON_MODES:
+        return "mode_" + BUTTON_MODES[stripped]
+    return "autre"
 
 
 def handle_menu(chat_id: int, text: str):
@@ -1248,7 +1276,9 @@ def process_message(user_id: int, chat_id: int, text: str, message_id: int):
 
         export_format = EXPORT_BUTTONS.get(text.strip())
         if export_format:
+            _track("export_requested", user_id, format=export_format)
             if not payment_gate.can_export(user_id, chat_id):
+                _track("payment_requested", user_id, format=export_format)
                 try:
                     send_telegram_message(chat_id, payment_gate.payment_request_text(), reply_markup=MENU_KEYBOARD)
                 except Exception as e:
@@ -1264,6 +1294,7 @@ def process_message(user_id: int, chat_id: int, text: str, message_id: int):
         cv_reply = handle_cv_flow(chat_id, text)
         if cv_reply is not None:
             reply_text, keyboard, claude_input = cv_reply
+            _track("cv_questionnaire_reply", user_id, done=(claude_input is not None))
             try:
                 send_telegram_message(chat_id, reply_text, reply_markup=keyboard)
             except Exception as e:
@@ -1276,6 +1307,7 @@ def process_message(user_id: int, chat_id: int, text: str, message_id: int):
         else:
             menu_reply = handle_menu(chat_id, text)
             if menu_reply:
+                _track("menu_used", user_id, kind=_menu_kind(text))
                 reply_text, keyboard = menu_reply
                 try:
                     send_telegram_message(chat_id, reply_text, reply_markup=keyboard)
@@ -1302,6 +1334,7 @@ def process_message(user_id: int, chat_id: int, text: str, message_id: int):
         except Exception as e:
             logger.error("Erreur envoi réponse (%s): %s", type(e).__name__, redact(e))
             return
+        _track("ai_reply_sent", user_id, cv=cv_just_written)
 
         if cv_just_written and CV_RE.search(response_text or ""):
             # Étape suivante : texte fixe (pas d'appel Claude), pour que le client sache toujours quoi faire

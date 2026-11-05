@@ -244,7 +244,6 @@ elif CLAUDE_THINKING:
 # ---------------------------------------------------------------- Menu et activités
 
 MODE_EMPLOI = "emploi"
-MODE_DOCUMENTS = "documents"
 
 BUTTON_EMPLOI = "💼 Emploi & Candidatures"
 BUTTON_DOCUMENTS = "📄 Documents professionnels"
@@ -260,10 +259,9 @@ BUTTON_PDF = "⬇️ PDF"
 
 EXPORT_BUTTONS = {BUTTON_WORD: "docx", BUTTON_PDF: "pdf"}
 
-BUTTON_MODES = {
-    BUTTON_EMPLOI: MODE_EMPLOI,
-    BUTTON_DOCUMENTS: MODE_DOCUMENTS,
-}
+# Anciens boutons retirés du menu (clavier resté affiché chez un client) : ils renvoient au volet CV & Lettre.
+LEGACY_BUTTONS = frozenset({BUTTON_EMPLOI, BUTTON_DOCUMENTS})
+
 
 # Clavier permanent : chaque bouton envoie son libellé comme un message texte ordinaire,
 # ce qui fonctionne avec allowed_updates=["message"] (pas de callback_query à gérer).
@@ -271,8 +269,6 @@ MENU_KEYBOARD = {
     "keyboard": [
         [{"text": BUTTON_VOLET_CV}, {"text": BUTTON_EBOOKS}, {"text": BUTTON_BOUTIQUE}],
         [{"text": BUTTON_CV}, {"text": BUTTON_LETTRE}],
-        [{"text": BUTTON_EMPLOI}],
-        [{"text": BUTTON_DOCUMENTS}],
         [{"text": BUTTON_WORD}, {"text": BUTTON_PDF}],
         [{"text": BUTTON_TARIFS}, {"text": BUTTON_AIDE}],
     ],
@@ -289,9 +285,8 @@ if os.environ.get("WHATSAPP_SHOP_URL", "").strip() and not WHATSAPP_SHOP_URL:
 
 MODE_PROMPTS = {
     MODE_EMPLOI: (
-        "Activité en cours : Emploi & Candidatures. Tu aides à analyser des offres d'emploi, "
-        "adapter un CV, rédiger des lettres de motivation et des emails de candidature, "
-        "et préparer des entretiens. N'invente jamais d'expérience, de diplôme, de date, "
+        "Activité en cours : CV & Lettre de motivation. Tu aides à rédiger un CV et une lettre de motivation, "
+        "en t'appuyant sur l'offre d'emploi quand la personne en donne une. N'invente jamais d'expérience, de diplôme, de date, "
         "d'employeur ou de chiffre : utilise uniquement ce que la personne fournit et demande "
         "ce qui manque. Signale honnêtement les écarts entre son profil et les exigences du poste. "
         "Quand tu analyses une offre lue depuis une page, n'attribue à l'offre que ce que la page "
@@ -313,20 +308,27 @@ MODE_PROMPTS = {
         "(Profil, Compétences clés, Expérience professionnelle, Formation, Langues) ; expériences de la "
         "plus récente à la plus ancienne (poste, employeur, dates, puces d'accomplissements chiffrés si la "
         "personne les fournit) ; reprends les mots-clés de l'offre seulement s'ils sont vrais pour elle. "
+        "FORMULE DE RÉDACTION DU CV : "
+        "(1) Profil : 3 à 4 lignes = métier visé + années d'expérience (seulement si fournies) + 2 ou 3 forces "
+        "prouvées par les faits donnés + ce que la personne apporte au poste. Jamais de formule creuse "
+        "(« dynamique et motivé »). "
+        "(2) Compétences clés : 6 à 10 mots-clés concrets (métier, outils, logiciels), sans barre de niveau. "
+        "(3) Chaque poste : 3 à 5 puces. Chaque puce = verbe d'action au passé (Géré, Instruit, Encadré, "
+        "Recouvré…) + ce qui a été fait + le contexte (volume, équipe, outil) + le résultat. Un chiffre "
+        "n'apparaît que si la personne l'a donné, exactement comme donné ; sinon décris le fait avec précision, "
+        "sans chiffre, et ajoute en fin de réponse une ligne « À chiffrer : » avec les chiffres à fournir. "
+        "(4) Formation : diplôme le plus récent d'abord ; pour un premier emploi, place la formation avant "
+        "l'expérience. (5) Langues avec un niveau simple (débutant, intermédiaire, courant, bilingue) et "
+        "informatique en une ligne. (6) Longueur : 1 page pour un débutant, 2 pages au maximum sinon. "
+        "(7) Pas de photo ni d'état civil détaillé (date de naissance, situation matrimoniale) sauf si la "
+        "personne le demande ; mets le permis de conduire seulement s'il sert au poste. "
+        "(8) Style : phrases courtes, un seul temps, pas de « je », pas d'abréviation obscure. "
         "Si la personne fournit une offre ET son CV ou son parcours, termine ta réponse par la balise "
         "[[SCORE]], puis 8 à 12 exigences clés de l'offre, une par ligne, chacune commençant par ✅ "
         "(présente dans le CV), ⚠️ (partielle) ou ❌ (absente), puis la balise [[/SCORE]]. N'écris "
         "aucun pourcentage : le système le calcule. N'ajoute jamais au CV une expérience, un diplôme "
         "ou un outil absent pour améliorer le score ; pour chaque ❌, propose une action réaliste ou "
         "dis qu'il faut accepter l'écart."
-    ),
-    MODE_DOCUMENTS: (
-        "Activité en cours : Documents professionnels. Tu rédiges des courriers, devis, factures, "
-        "comptes rendus et rapports. Pour tout montant, détaille le calcul ligne par ligne "
-        "(quantité × prix unitaire, total HT, taxe, total TTC) et vérifie-le. N'invente aucun prix, "
-        "taux de taxe, nom ou coordonnée : écris [à compléter]. Écris le document dans ta réponse, "
-        "structuré avec des titres (#), des listes (-) et des tableaux Markdown (|) : la personne "
-        "pourra ensuite en obtenir une copie Word ou PDF avec les boutons du menu."
     ),
 }
 
@@ -338,14 +340,12 @@ MODE_RULE = (
 )
 
 MENU_TEXT = (
-    "Choisis une activité dans le menu ci-dessous, ou écris simplement ta question.\n\n"
+    "Choisis dans le menu ci-dessous, ou écris simplement ta question.\n\n"
     f"{BUTTON_VOLET_CV} : CV, lettre de motivation, tarifs et paiement.\n"
     f"{BUTTON_EBOOKS} : nos ebooks en vente sur la boutique en ligne.\n"
     f"{BUTTON_BOUTIQUE} : vêtements, accessoires et savon bio sur WhatsApp.\n\n"
     f"{BUTTON_CV} : je te pose 8 questions, une à la fois, puis je rédige ton CV (Word/PDF).\n"
     f"{BUTTON_LETTRE} : une lettre de motivation adaptée à ton offre.\n"
-    f"{BUTTON_EMPLOI} : analyse d'offre, CV, lettre, email de candidature, entretien.\n"
-    f"{BUTTON_DOCUMENTS} : courrier, devis, facture, compte rendu, rapport.\n\n"
     f"{BUTTON_TARIFS} : les prix et comment payer.\n"
     f"{BUTTON_WORD} ou {BUTTON_PDF} : recevoir ma dernière réponse en fichier."
 )
@@ -366,18 +366,6 @@ HELP_TEXT = (
     "/paye pour déclarer un paiement, /oubli pour effacer la conversation."
 )
 
-MODE_SELECTED_TEXT = {
-    MODE_EMPLOI: (
-        "Activité : Emploi & Candidatures.\n"
-        "Envoie-moi l'offre d'emploi (texte complet) et/ou ton parcours, puis dis-moi ce que tu veux : "
-        "analyse, CV, lettre de motivation, email ou préparation d'entretien."
-    ),
-    MODE_DOCUMENTS: (
-        "Activité : Documents professionnels.\n"
-        "Dis-moi quel document tu veux (courrier, devis, facture, compte rendu, rapport), "
-        "pour qui, et donne les informations utiles (noms, articles, quantités, prix, taux de taxe)."
-    ),
-}
 
 
 MENU_COMMANDS = ("/start", "/menu", "/aide", "/help", "/outils", "/oubli", *payments.PAYMENT_COMMANDS,
@@ -602,7 +590,7 @@ def handle_cv_flow(chat_id: int, text: str):
         status, reply, answers = cv_flow.skip(chat_id)
     elif (
         not command
-        and stripped not in BUTTON_MODES
+        and stripped not in LEGACY_BUTTONS
         and stripped not in GUIDE_BUTTONS
         and stripped != BUTTON_AIDE
         and cv_flow.is_active(chat_id)
@@ -622,7 +610,7 @@ def handle_cv_flow(chat_id: int, text: str):
 def welcome_message() -> str:
     """Accueil du parcours guidé : étapes, tarifs officiels (jamais inventés) et boutons"""
     return guide.welcome_text(
-        payment_gate.instructions, BUTTON_CV, BUTTON_LETTRE, BUTTON_EMPLOI, BUTTON_DOCUMENTS,
+        payment_gate.instructions, BUTTON_CV, BUTTON_LETTRE,
         BUTTON_VOLET_CV, BUTTON_EBOOKS, BUTTON_BOUTIQUE,
     )
 
@@ -662,16 +650,14 @@ def handle_menu(chat_id: int, text: str):
         if _clear_history(chat_id) and cv_cleared:
             return FORGET_DONE_TEXT, MENU_KEYBOARD
         return FORGET_PARTIAL_TEXT, MENU_KEYBOARD
-    mode = BUTTON_MODES.get(text.strip())
-    if mode:
-        chat_modes[chat_id] = mode
-        return MODE_SELECTED_TEXT[mode], MENU_KEYBOARD
+    if text.strip() in LEGACY_BUTTONS:
+        return guide.cv_volet_text(payment_gate.instructions, BUTTON_CV, BUTTON_LETTRE, BUTTON_TARIFS), MENU_KEYBOARD
     return None
 
 
 # ---------------------------------------------------------------- Export Word / PDF
 
-EXPORT_TITLES = {MODE_EMPLOI: "Candidature", MODE_DOCUMENTS: "Document professionnel"}
+EXPORT_TITLES = {MODE_EMPLOI: "CV et lettre de motivation"}
 EXPORT_MIME = {
     "docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
     "pdf": "application/pdf",
@@ -770,13 +756,12 @@ def build_system_prompt(first_name: str = "", mode: str = None) -> str:
         "Tu es CHARYAM BOUTIQUE, un assistant Telegram pour la Côte d'Ivoire. Les messages sont lus "
         "sur téléphone : réponses courtes, claires, en français simple, résultat d'abord.",
         "Ce que tu sais faire aujourd'hui : le questionnaire « CV intelligent » (8 questions puis CV "
-        "en Word/PDF), l'aide à l'emploi (analyse d'offre, CV adapté, lettre de motivation, email de "
-        "candidature, entretien) et les documents professionnels (courrier, devis, facture, compte "
-        "rendu, rapport). Pour tout autre sujet, réponds si tu peux et honnêtement, sans inventer.",
+        "en Word/PDF) et la lettre de motivation adaptée à une offre. Pour tout autre sujet, réponds "
+        "brièvement si tu peux et honnêtement, sans inventer, puis ramène la personne vers ces deux services.",
         "Hors tarifs et moyens de paiement officiels indiqués plus bas, tu ne connais ni délais, ni "
         "catalogue de produits : n'en invente jamais et ne promets jamais un service, une livraison ou "
         "un paiement que tu ne gères pas. Dis plutôt que l'administrateur précisera ces points.",
-        "Si la demande concerne un de tes trois services, invite la personne à le choisir avec les "
+        "Si la demande concerne un de tes services, invite la personne à le choisir avec les "
         "boutons du menu (ou /menu). Si une information essentielle manque, pose UNE seule question.",
     ]
     first_name = (first_name or "").strip()

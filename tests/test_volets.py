@@ -104,6 +104,12 @@ class VoletsTest(unittest.TestCase):
         for item in boutique.EBOOKS:
             self.assertTrue(item["url"].startswith("https://zsykaits.mychariow.shop/prd_"), item["url"])
 
+    def test_ebooks_correspondent_aux_produits_publies_sur_chariow(self):
+        # Identifiants relevés sur la boutique (API + page publique) le 5 nov. 2026. À mettre à jour si la boutique change.
+        publies = {"prd_6rbfwkby", "prd_5g9kzjwv", "prd_0bvt51bh", "prd_2j838h8j"}
+        ids = {item["url"].rsplit("/", 1)[-1] for item in boutique.EBOOKS}
+        self.assertEqual(ids, publies)
+
     def test_ebook_au_lien_invalide_est_ignore(self):
         old = boutique.EBOOKS
         boutique.EBOOKS = old + ({"titre": "Faux", "bouton": "5️⃣ Faux", "description": "x", "url": "http://non-securise.com"},)

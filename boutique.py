@@ -34,7 +34,8 @@ def link_keyboard(label: str, url: str):
 BUTTON_LABEL_EBOOKS = "📚 Voir les ebooks"
 BUTTON_LABEL_BOUTIQUE = "🛍️ Ouvrir la boutique WhatsApp"
 
-# Fiches des ebooks publiés sur Chariow (relevées sur la boutique le 5 nov. 2026). Aucun prix n'est écrit ici :
+# Fiches des ebooks publiés sur Chariow (vérifiées sur l'API et la page publique de la boutique le 5 nov. 2026 :
+# 4 produits publiés, chacun avec un fichier PDF). Aucun prix n'est écrit ici :
 # les promotions changent, la page Chariow de chaque produit fait foi. Pour ajouter ou retirer un ebook,
 # modifier cette liste (un lien qui n'est pas un https complet est ignoré, jamais remplacé).
 EBOOKS = (
@@ -53,17 +54,18 @@ EBOOKS = (
         "url": "https://zsykaits.mychariow.shop/prd_5g9kzjwv",
     },
     {
-        "titre": "Le Rôle de l'Homme pendant la Grossesse",
-        "bouton": "3️⃣ Rôle de l'Homme (grossesse)",
-        "description": "Un guide en 10 chapitres, avec plan d'action et checklist, pour accompagner sa femme "
-                       "du premier trimestre jusqu'aux premiers jours après la naissance.",
-        "url": "https://zsykaits.mychariow.shop/prd_nubtzj1t",
+        "titre": "Le Guide Complet du Code de la Route",
+        "bouton": "3️⃣ Code de la Route (CI)",
+        "description": "Le code de la route ivoirien en français simple : 17 chapitres, le permis à points, "
+                       "115 QCM corrigés et un examen blanc de 25 questions. Pour les candidats au permis.",
+        "url": "https://zsykaits.mychariow.shop/prd_0bvt51bh",
     },
     {
-        "titre": "Comment maîtriser l'IA Claude",
-        "bouton": "4️⃣ Maîtriser l'IA Claude",
-        "description": "Une ressource pour découvrir l'IA Claude et avancer à son rythme.",
-        "url": "https://zsykaits.mychariow.shop/prd_i634in2z",
+        "titre": "Gastronomie ivoirienne : 90 plats pour 90 jours",
+        "bouton": "4️⃣ Gastronomie ivoirienne",
+        "description": "Un plat ivoirien par jour pendant 90 jours : ingrédients, quantités, étapes détaillées, "
+                       "astuces et un QCM pour tester ses connaissances.",
+        "url": "https://zsykaits.mychariow.shop/prd_2j838h8j",
     },
 )
 

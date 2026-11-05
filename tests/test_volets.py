@@ -81,13 +81,45 @@ class VoletsTest(unittest.TestCase):
             self.assertIn(label, sent["text"])
         self.assertEqual(sent["reply_markup"], bot.MENU_KEYBOARD)
 
-    def test_volet_ebooks_redirige_vers_chariow(self):
+    def test_volet_ebooks_presente_chaque_ebook_avec_son_lien(self):
         bot.process_message(CLIENT, CLIENT, bot.BUTTON_EBOOKS, 1)
         self.assertEqual(base.CLAUDE_CALLS, [])
         sent = self.messages()[0]
-        button = sent["reply_markup"]["inline_keyboard"][0][0]
-        self.assertEqual(button["url"], boutique.DEFAULT_CHARIOW_URL)
+        rows = sent["reply_markup"]["inline_keyboard"]
+        urls = [row[0]["url"] for row in rows]
+        self.assertEqual(urls[:-1], [e["url"] for e in boutique.EBOOKS])      # un bouton par ebook, dans l'ordre
+        self.assertEqual(urls[-1], boutique.DEFAULT_CHARIOW_URL)               # puis la boutique complète
+        for item in boutique.EBOOKS:
+            self.assertIn(item["titre"], sent["text"])
+            self.assertIn(item["description"], sent["text"])
         self.assertIn("pas dans ce chat", sent["text"])
+        self.assertLess(len(sent["text"]), 4000)
+
+    def test_volet_ebooks_n_affiche_aucun_prix(self):
+        bot.process_message(CLIENT, CLIENT, bot.BUTTON_EBOOKS, 1)
+        self.assertNotIn("FCFA", self.messages()[0]["text"])
+
+    def test_ebooks_tous_les_liens_sont_des_https_complets(self):
+        self.assertEqual(len(boutique.valid_ebooks()), len(boutique.EBOOKS))
+        for item in boutique.EBOOKS:
+            self.assertTrue(item["url"].startswith("https://zsykaits.mychariow.shop/prd_"), item["url"])
+
+    def test_ebook_au_lien_invalide_est_ignore(self):
+        old = boutique.EBOOKS
+        boutique.EBOOKS = old + ({"titre": "Faux", "bouton": "5️⃣ Faux", "description": "x", "url": "http://non-securise.com"},)
+        try:
+            bot.process_message(CLIENT, CLIENT, bot.BUTTON_EBOOKS, 1)
+            sent = self.messages()[0]
+        finally:
+            boutique.EBOOKS = old
+        self.assertNotIn("Faux", sent["text"])
+        self.assertEqual(len(sent["reply_markup"]["inline_keyboard"]), len(old) + 1)
+
+    def test_ebooks_sans_lien_de_boutique_garde_les_fiches(self):
+        bot.CHARIOW_STORE_URL = ""
+        bot.process_message(CLIENT, CLIENT, bot.BUTTON_EBOOKS, 1)
+        rows = self.messages()[0]["reply_markup"]["inline_keyboard"]
+        self.assertEqual(len(rows), len(boutique.EBOOKS))                      # pas de bouton « boutique » inventé
 
     def test_volet_boutique_redirige_vers_whatsapp(self):
         bot.process_message(CLIENT, CLIENT, bot.BUTTON_BOUTIQUE, 1)
@@ -103,10 +135,15 @@ class VoletsTest(unittest.TestCase):
         self.assertIn("arrive bientôt", sent["text"])
         self.assertEqual(sent["reply_markup"], bot.MENU_KEYBOARD)           # aucun faux bouton
 
-    def test_ebooks_sans_lien(self):
+    def test_ebooks_sans_aucun_lien(self):
         bot.CHARIOW_STORE_URL = ""
-        bot.process_message(CLIENT, CLIENT, bot.BUTTON_EBOOKS, 1)
-        sent = self.messages()[0]
+        old = boutique.EBOOKS
+        boutique.EBOOKS = ()
+        try:
+            bot.process_message(CLIENT, CLIENT, bot.BUTTON_EBOOKS, 1)
+            sent = self.messages()[0]
+        finally:
+            boutique.EBOOKS = old
         self.assertEqual(sent["reply_markup"], bot.MENU_KEYBOARD)
         self.assertIn("pas joignable", sent["text"])
 

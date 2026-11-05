@@ -98,36 +98,92 @@ def a_blanc() -> int:
     return 0
 
 
+def _presence(valeur):
+    """« absente » (non définie), « vide » (définie mais vide) ou « présente »."""
+    if valeur is None:
+        return "absente"
+    return "vide" if not str(valeur).strip() else "présente"
+
+
+def controler_variables(env, invalide=False):
+    """Contrôle LOCAL des 3 variables, sans réseau. Retourne (lignes, corrections, valeurs).
+    lignes : (variable, présence, contrôle, PASS/FAIL/N/A). Les valeurs secrètes ne sont jamais mises dans les lignes :
+    seulement des oui/non et la LONGUEUR du sel. L'hôte n'est affiché que s'il est autorisé."""
+    lignes, corrections = [], []
+
+    brute = env.get("POSTHOG_API_KEY")
+    cle = (brute or "").strip()
+    if invalide:
+        lignes.append(("POSTHOG_API_KEY", _presence(brute), "non utilisée : une fausse clé de test sert à la place", "N/A"))
+    elif not cle:
+        lignes.append(("POSTHOG_API_KEY", _presence(brute), "format phc_ : non vérifiable", "FAIL"))
+        corrections.append("POSTHOG_API_KEY : définir la clé de projet du projet de TEST (commence par phc_).")
+    elif not cle.startswith("phc_") or len(cle) < 12:
+        lignes.append(("POSTHOG_API_KEY", "présente", "format phc_ : NON respecté", "FAIL"))
+        corrections.append("POSTHOG_API_KEY : le format doit être celui d'une clé de projet (phc_…).")
+    else:
+        lignes.append(("POSTHOG_API_KEY", "présente", "format phc_ : respecté (la valeur n'est pas affichée)", "PASS"))
+
+    brut = env.get("POSTHOG_SALT")
+    sel = (brut or "").strip()
+    minimum = usage_analytics.MIN_SALT_CHARS
+    if not sel:
+        lignes.append(("POSTHOG_SALT", _presence(brut), "longueur 0 (minimum %d : non atteint)" % minimum, "FAIL"))
+    else:
+        atteint = len(sel) >= minimum
+        lignes.append(("POSTHOG_SALT", "présent", "longueur %d (minimum %d : %s)" % (len(sel), minimum, "atteint" if atteint else "non atteint"),
+                       "PASS" if atteint else "FAIL"))
+    if len(sel) < minimum:
+        corrections.append("POSTHOG_SALT : %d caractères minimum." % minimum)
+
+    valeur = env.get("POSTHOG_HOST")
+    hote, probleme = valider_hote(valeur)
+    if probleme:
+        lignes.append(("POSTHOG_HOST", _presence(valeur), "hôte REFUSÉ (valeur non affichée par prudence)", "FAIL"))
+        corrections.append(probleme)
+    else:
+        lignes.append(("POSTHOG_HOST", "présent", "%s : autorisé (%s)" % (hote, HOTES_AUTORISES[hote]), "PASS"))
+
+    return lignes, corrections, {"cle": cle, "sel": sel, "hote": hote}
+
+
+def afficher_tableau(lignes):
+    print("CONTRÔLE DES VARIABLES LOCALES (avant toute connexion réseau)")
+    print("%-16s %-9s %-62s %s" % ("Variable", "Présence", "Contrôle", "Résultat"))
+    for variable, presence, controle, resultat in lignes:
+        print("%-16s %-9s %-62s %s" % (variable, presence, controle, resultat))
+    print("ENVIRONNEMENT : %s | Projet attendu : %s" % (ENVIRONNEMENT, CONFIRMATION_ATTENDUE))
+    print("Limite : le préfixe phc_ ne prouve PAS que la clé appartient à « %s ». Ce script ne peut pas le vérifier ;" % CONFIRMATION_ATTENDUE)
+    print("seule votre confirmation ci-dessous, faite dans le tableau de bord PostHog, le garantit.\n")
+
+
 def verifier_configuration(argv, env, saisie):
-    """Retourne (configuration, None) ou (None, code de sortie après affichage du refus)."""
+    """Retourne (configuration, None) ou (None, code de sortie après affichage du refus).
+    Ordre : 1) contrôle local de chaque variable et tableau, 2) confirmation humaine, 3) seulement ensuite l'envoi."""
     if "--confirm-projet-de-test" not in argv:
         return None, _erreur("ajoutez --confirm-projet-de-test pour confirmer que vous visez un projet PostHog de TEST.")
     invalide = "--cle-invalide" in argv
-    hote, probleme = valider_hote(env.get("POSTHOG_HOST"))
-    if probleme:
-        return None, _erreur(probleme)
-    sel = (env.get("POSTHOG_SALT") or "").strip()
-    if len(sel) < usage_analytics.MIN_SALT_CHARS:
-        return None, _erreur("POSTHOG_SALT est absent ou trop court (%d caractères minimum)." % usage_analytics.MIN_SALT_CHARS)
-    cle = FAUSSE_CLE
-    if not invalide:
-        cle = (env.get("POSTHOG_API_KEY") or "").strip()
-        if not cle.startswith("phc_") or len(cle) < 12:
-            return None, _erreur("POSTHOG_API_KEY est absente ou n'a pas le format d'une clé de projet (phc_…).")
-    print("ENVIRONNEMENT : %s" % ENVIRONNEMENT)
-    print("Hôte PostHog  : %s (%s)" % (hote, HOTES_AUTORISES[hote]))
-    print("Scénario      : %s" % ("CLÉ INVALIDE (une fausse clé, la vraie n'est pas utilisée)" if invalide
-                                  else "5 événements fictifs avec la clé de test"))
-    print("Clé / sel     : définis, jamais affichés")
-    print("\nCette région doit être celle du projet « %s » dans PostHog." % CONFIRMATION_ATTENDUE)
+    lignes, corrections, valeurs = controler_variables(env, invalide)
+    afficher_tableau(lignes)
+    if corrections:
+        return None, _erreur("contrôle des variables en échec, rien n'a été envoyé et PostHog n'a pas été contacté.\n  - "
+                             + "\n  - ".join(corrections))
+    print("Scénario : %s" % ("CLÉ INVALIDE (une fausse clé, la vraie n'est pas utilisée)" if invalide
+                             else "5 événements fictifs avec la clé de test"))
+    print("Dans votre tableau de bord PostHog, vérifiez VISUELLEMENT que :")
+    print("  1. l'organisation sélectionnée est « %s » ;" % CONFIRMATION_ATTENDUE)
+    print("  2. le projet sélectionné est le projet de test dédié ;")
+    print("  3. la clé copiée provient de ce projet précis ;")
+    print("  4. la région (%s) correspond à l'hôte %s ;" % (HOTES_AUTORISES[valeurs["hote"]], valeurs["hote"]))
+    print("  5. aucune clé de production n'est utilisée.")
     try:
-        reponse = saisie("Tapez exactement « %s » pour confirmer que la clé a été copiée depuis cette organisation : "
-                         % CONFIRMATION_ATTENDUE)
+        reponse = saisie("Si les 5 points sont vrais, tapez exactement « %s » : " % CONFIRMATION_ATTENDUE)
     except (EOFError, KeyboardInterrupt):
         reponse = ""
     if (reponse or "").strip() != CONFIRMATION_ATTENDUE:
         return None, _erreur("confirmation manuelle absente ou incorrecte : rien n'a été envoyé.")
-    return {"cle": cle, "sel": sel, "hote": hote, "invalide": invalide}, None
+    return {"cle": FAUSSE_CLE if invalide else valeurs["cle"], "sel": valeurs["sel"], "hote": valeurs["hote"],
+            "invalide": invalide}, None
 
 
 def executer(argv, env=None, saisie=input, http=None, sleep=time.sleep) -> int:

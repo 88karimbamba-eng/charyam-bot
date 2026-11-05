@@ -232,6 +232,198 @@ class CleInvalideTest(unittest.TestCase):
                 self.assertNotIn(SEL, sortie)
 
 
+class Strict:
+    """Remplace UsageAnalytics et coupe le réseau : prouve qu'un contrôle en échec n'ouvre aucune connexion."""
+
+    def __init__(self):
+        self.instances = 0
+        self.connexions = 0
+        self.invites = []
+
+    def __enter__(self):
+        import socket
+        from unittest import mock
+        strict = self
+
+        def interdit(*args, **kwargs):
+            strict.connexions += 1
+            raise RuntimeError("RÉSEAU INTERDIT")
+
+        def fabrique(*args, **kwargs):
+            strict.instances += 1
+            return self._vraie(*args, **kwargs)
+
+        self._vraie = usage_analytics.UsageAnalytics
+        self._patchs = [mock.patch.object(socket.socket, "connect", interdit),
+                        mock.patch.object(socket, "getaddrinfo", interdit),
+                        mock.patch.object(socket, "create_connection", interdit),
+                        mock.patch.object(usage_analytics, "UsageAnalytics", fabrique)]
+        for patch in self._patchs:
+            patch.start()
+        return self
+
+    def __exit__(self, *exc):
+        for patch in self._patchs:
+            patch.stop()
+
+
+def lancer_strict(argv, env, reponse="charyam-test", http=None):
+    with Strict() as strict:
+        def saisie(invite):
+            strict.invites.append(invite)
+            return reponse
+        sortie = io.StringIO()
+        with contextlib.redirect_stdout(sortie), contextlib.redirect_stderr(sortie):
+            code = reel.executer(argv, env=env, saisie=saisie, http=http, sleep=lambda _s: None)
+    return code, sortie.getvalue(), strict
+
+
+class TableauDeControleTest(unittest.TestCase):
+    """Chaque contrôle local est visible dans la console, avant toute connexion et avant toute confirmation."""
+
+    def ligne(self, sortie, variable):
+        lignes = [l for l in sortie.splitlines() if l.startswith(variable)]
+        self.assertEqual(len(lignes), 1, "ligne du tableau manquante pour " + variable)
+        return lignes[0]
+
+    def assertEchec(self, env, variable, fragment, argv=CONFIRME):
+        code, sortie, strict = lancer_strict(argv, env)
+        self.assertEqual(code, 2, sortie)
+        ligne = self.ligne(sortie, variable)
+        self.assertTrue(ligne.rstrip().endswith("FAIL"), ligne)
+        self.assertIn(fragment, ligne)
+        self.assertIn("REFUSÉ", sortie)
+        self.assertEqual(strict.invites, [], "aucune confirmation demandée tant qu'un contrôle échoue")
+        self.assertEqual(strict.instances, 0, "le moteur d'envoi ne doit même pas être créé")
+        self.assertEqual(strict.connexions, 0, "aucune connexion réseau")
+        for secret in (CLE, SEL):
+            self.assertNotIn(secret, sortie)
+        return sortie
+
+    def test_variables_absentes(self):
+        for variable, fragment in (("POSTHOG_API_KEY", "absente"), ("POSTHOG_SALT", "absente"), ("POSTHOG_HOST", "absente")):
+            with self.subTest(variable=variable):
+                self.assertEchec({k: v for k, v in ENV.items() if k != variable}, variable, fragment)
+
+    def test_variables_vides(self):
+        for variable in ("POSTHOG_API_KEY", "POSTHOG_SALT", "POSTHOG_HOST"):
+            for vide in ("", "   "):
+                with self.subTest(variable=variable, valeur=repr(vide)):
+                    self.assertEchec({**ENV, variable: vide}, variable, "vide")
+
+    def test_cle_sans_prefixe_phc(self):
+        for cle in ("sk_live_" + "x" * 30, "PHC_" + "x" * 30, "phx_" + "x" * 30, "phc_court"):
+            with self.subTest(cle=cle[:6]):
+                sortie = self.assertEchec({**ENV, "POSTHOG_API_KEY": cle}, "POSTHOG_API_KEY", "NON respecté")
+                self.assertNotIn(cle, sortie)
+
+    def test_sel_de_15_caracteres_refuse_avec_sa_longueur(self):
+        self.assertEchec({**ENV, "POSTHOG_SALT": "a" * 15}, "POSTHOG_SALT", "longueur 15 (minimum 16 : non atteint)")
+
+    def test_sel_de_16_caracteres_accepte_avec_sa_longueur(self):
+        sel = "Zq" * 8
+        code, sortie, strict = lancer_strict(CONFIRME, {**ENV, "POSTHOG_SALT": sel}, http=FakeHttp(200))
+        self.assertEqual(code, 0, sortie)
+        ligne = self.ligne(sortie, "POSTHOG_SALT")
+        self.assertIn("longueur 16 (minimum 16 : atteint)", ligne)
+        self.assertTrue(ligne.rstrip().endswith("PASS"))
+        self.assertNotIn(sel, sortie)
+
+    def test_longueur_reelle_du_sel_affichee(self):
+        for longueur in (17, 32, 44):
+            with self.subTest(longueur=longueur):
+                sel = ("Xy9" * 30)[:longueur]
+                _, sortie, _ = lancer_strict(CONFIRME, {**ENV, "POSTHOG_SALT": sel}, http=FakeHttp(200))
+                self.assertIn("longueur %d (minimum 16 : atteint)" % longueur, self.ligne(sortie, "POSTHOG_SALT"))
+                self.assertNotIn(sel, sortie)
+
+    def test_hotes_non_autorises_refuses_sans_afficher_la_valeur(self):
+        for hote in ("http://us.i.posthog.com", "https://app.posthog.com", "https://exemple.test",
+                     "https://us.i.posthog.com.evil.test", "https://utilisateur:motdepasse@eu.i.posthog.com", CLE):
+            with self.subTest(hote=hote[:25]):
+                sortie = self.assertEchec({**ENV, "POSTHOG_HOST": hote}, "POSTHOG_HOST", "REFUSÉ")
+                self.assertNotIn(hote, sortie)
+
+    def test_hotes_autorises_affiches_et_acceptes(self):
+        for hote in ("https://us.i.posthog.com", "https://eu.i.posthog.com"):
+            with self.subTest(hote=hote):
+                code, sortie, _ = lancer_strict(CONFIRME, {**ENV, "POSTHOG_HOST": hote}, http=FakeHttp(200))
+                self.assertEqual(code, 0, sortie)
+                ligne = self.ligne(sortie, "POSTHOG_HOST")
+                self.assertIn(hote + " : autorisé", ligne)
+                self.assertTrue(ligne.rstrip().endswith("PASS"))
+
+    def test_toutes_les_lignes_sont_visibles_meme_quand_plusieurs_controles_echouent(self):
+        code, sortie, strict = lancer_strict(CONFIRME, {})
+        self.assertEqual(code, 2)
+        for variable in ("POSTHOG_API_KEY", "POSTHOG_SALT", "POSTHOG_HOST"):
+            self.assertTrue(self.ligne(sortie, variable).rstrip().endswith("FAIL"))
+        self.assertIn("CONTRÔLE DES VARIABLES LOCALES (avant toute connexion réseau)", sortie)
+        self.assertEqual((strict.invites, strict.instances, strict.connexions), ([], 0, 0))
+
+    def test_tableau_complet_et_affiche_avant_la_confirmation(self):
+        affiche_avant = []
+        sortie = io.StringIO()
+        with Strict() as strict, contextlib.redirect_stdout(sortie):
+            reel.executer(CONFIRME, env=ENV, saisie=lambda _: affiche_avant.append(sortie.getvalue()) or "non", http=FakeHttp())
+        vu = affiche_avant[0]
+        for variable in ("POSTHOG_API_KEY", "POSTHOG_SALT", "POSTHOG_HOST"):
+            self.assertRegex(vu, variable + r".*PASS")
+        self.assertIn("ENVIRONNEMENT : TEST", vu)
+        self.assertIn("charyam-test", vu)
+        self.assertEqual((strict.instances, strict.connexions), (0, 0))   # rien d'ouvert avant/sans confirmation
+
+    def test_clef_marquee_non_utilisee_pour_le_scenario_cle_invalide(self):
+        code, sortie, _ = lancer_strict(CONFIRME + ["--cle-invalide"], {k: v for k, v in ENV.items() if k != "POSTHOG_API_KEY"},
+                                        http=FakeHttp(401))
+        self.assertEqual(code, 0, sortie)
+        ligne = self.ligne(sortie, "POSTHOG_API_KEY")
+        self.assertIn("non utilisée", ligne)
+        self.assertTrue(ligne.rstrip().endswith("N/A"))
+
+    def test_aucun_evenement_ni_connexion_avant_la_confirmation_du_projet(self):
+        for reponse in ("", "non", "charyam", "CHARYAM-TEST", "charyam-test ; oui"):
+            with self.subTest(reponse=reponse):
+                http = FakeHttp(200)
+                code, sortie, strict = lancer_strict(CONFIRME, ENV, reponse=reponse, http=http)
+                self.assertEqual(code, 2, sortie)
+                self.assertEqual((http.calls, strict.instances, strict.connexions), ([], 0, 0))
+                self.assertEqual(len(strict.invites), 1)
+                self.assertIn("charyam-test", strict.invites[0])
+
+    def test_la_confirmation_humaine_liste_les_cinq_points_et_la_limite(self):
+        _, sortie, _ = lancer_strict(CONFIRME, ENV, reponse="non", http=FakeHttp())
+        for point in ("l'organisation sélectionnée est « charyam-test »", "projet de test dédié", "provient de ce projet précis",
+                      "région", "aucune clé de production"):
+            self.assertIn(point, sortie)
+        self.assertIn("ne prouve PAS", sortie)
+        self.assertIn("ne peut pas le vérifier", sortie)
+        self.assertNotIn("clé vérifiée automatiquement", sortie)
+
+    def test_secrets_jamais_affiches_ni_ecrits_dans_un_fichier(self):
+        def fichiers():
+            trouves = set()
+            for dossier, sous, noms in os.walk(ROOT):
+                sous[:] = [d for d in sous if d not in (".git", "__pycache__", ".pytest_cache", ".venv-test")]
+                trouves.update(os.path.join(dossier, n) for n in noms)
+            return trouves
+        avant = fichiers()
+        CLE_ALEA, SEL_ALEA = "phc_Qz7Kx9Vw2Rm4Lp8Nd3Hs", "Jb5Tc6Yg1Fv0Ua2Xe7Wo4Zi9"
+        alea = {"POSTHOG_API_KEY": CLE_ALEA, "POSTHOG_SALT": SEL_ALEA, "POSTHOG_HOST": HOTE}
+        for env in (ENV, {**ENV, "POSTHOG_SALT": "court"}, {**ENV, "POSTHOG_HOST": CLE}, {**ENV, "POSTHOG_API_KEY": SEL}, alea):
+            for argv in (CONFIRME, CONFIRME + ["--cle-invalide"]):
+                _, sortie, _ = lancer_strict(argv, env, http=FakeHttp(401))
+                sortie2 = lancer_strict(argv, alea, http=FakeHttp(401))[1]
+                for secret in (CLE, SEL):
+                    self.assertNotIn(secret, sortie)
+                    self.assertNotIn(secret[:10], sortie)      # ni même un début de secret
+                # Secrets aléatoires distincts : aucune suite de 4 caractères ne doit apparaître dans la sortie
+                for secret in (CLE_ALEA[4:], SEL_ALEA):      # sans le préfixe public phc_
+                    for i in range(len(secret) - 3):
+                        self.assertNotIn(secret[i:i + 4], sortie2)
+        self.assertEqual(fichiers(), avant, "le script ne doit créer aucun fichier")
+
+
 class ModeABlancTest(unittest.TestCase):
     def test_a_blanc_sans_reseau_sans_lire_les_variables(self):
         sortie = io.StringIO()

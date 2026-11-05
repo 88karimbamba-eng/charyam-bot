@@ -83,7 +83,21 @@ Le sel est généré au hasard et n'est jamais affiché ni enregistré : il est 
 ```powershell
 .\.venv-test\Scripts\python.exe scripts\posthog_test_reel.py --confirm-projet-de-test
 ```
-Le script affiche `ENVIRONNEMENT : TEST` et l'hôte, puis demande de **taper `charyam-test`**. Il envoie alors **5 événements fictifs** :
+Le script commence par un **tableau de contrôle des variables locales**, affiché **avant toute connexion réseau** :
+```
+CONTRÔLE DES VARIABLES LOCALES (avant toute connexion réseau)
+Variable         Présence  Contrôle                                                       Résultat
+POSTHOG_API_KEY  présente  format phc_ : respecté (la valeur n'est pas affichée)          PASS
+POSTHOG_SALT     présent   longueur 32 (minimum 16 : atteint)                             PASS
+POSTHOG_HOST     présent   https://eu.i.posthog.com : autorisé (Europe)                   PASS
+```
+Pour chaque variable : présente, vide ou absente ; format valide ou non ; **longueur** (jamais la valeur) pour le sel ; hôte autorisé ou refusé
+(la valeur d'un hôte refusé n'est pas affichée). Si une ligne est en `FAIL`, le script indique la correction attendue et **s'arrête** :
+aucune confirmation n'est demandée, PostHog n'est pas contacté. Le préfixe `phc_` ne prouve **pas** que la clé appartient à `charyam-test` :
+le script ne peut pas le vérifier.
+
+Si tout est `PASS`, il affiche `ENVIRONNEMENT : TEST` et l'hôte, rappelle les 5 points à constater **visuellement** dans PostHog
+(organisation `charyam-test`, projet de test dédié, clé copiée de ce projet, région = hôte, aucune clé de production), puis demande de **taper `charyam-test`**. Il envoie alors **5 événements fictifs** :
 `menu_used`, `cv_questionnaire_reply`, `export_requested`, `payment_requested`, `ai_reply_sent`, chacun avec ses propriétés
 et `is_owner`, comme le bot. Attendu : `RÉSULTAT : OK (5 événements acceptés par PostHog)`. « Accepté » veut dire que PostHog a répondu 2xx : la **réception** se vérifie à l'étape 7.
 

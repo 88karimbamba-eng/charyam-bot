@@ -108,13 +108,18 @@ payment_gate = payments.PaymentGate(
 # Questionnaire « CV intelligent » : progression par chat (mémoire locale + stockage persistant si présent)
 cv_flow = cv_questionnaire.CvFlow(persistent_store)
 
-# Mesure d'usage anonyme PostHog (facultative : sans POSTHOG_API_KEY, rien n'est envoyé). Voir usage_analytics.py.
-usage = usage_analytics.UsageAnalytics(salt=TELEGRAM_TOKEN)
+# Mesure d'usage pseudonymisée PostHog (facultative : sans POSTHOG_API_KEY et POSTHOG_SALT, rien n'est envoyé).
+# Voir usage_analytics.py et docs/MESURE_USAGE.md.
+usage = usage_analytics.UsageAnalytics()
 
 
 def _track(event: str, user_id, **properties):
-    """Mesure anonyme : marque le propriétaire (pour le filtrer dans PostHog) ; ne lève jamais d'exception."""
-    usage.capture(event, user_id, is_owner=(user_id == USER_ID), **properties)
+    """Mesure pseudonymisée : marque le propriétaire (pour le filtrer dans PostHog). Ne lève JAMAIS d'exception :
+    une panne de la mesure ne doit en aucun cas empêcher de répondre au client."""
+    try:
+        usage.capture(event, user_id, is_owner=(user_id == USER_ID), **properties)
+    except Exception as e:
+        logger.debug("Mesure ignorée (%s)", type(e).__name__)
 
 # Validation au démarrage
 if not TELEGRAM_TOKEN:
@@ -637,7 +642,14 @@ def welcome_message() -> str:
 
 
 def _menu_kind(text: str) -> str:
-    """Nom court et fixe de l'élément de menu utilisé (jamais le texte du client)."""
+    """Nom court et fixe de l'élément de menu utilisé (jamais le texte du client). Ne lève jamais d'exception."""
+    try:
+        return _menu_kind_unsafe(text)
+    except Exception:
+        return "autre"
+
+
+def _menu_kind_unsafe(text: str) -> str:
     stripped = text.strip()
     command = stripped.split()[0].split("@")[0].lower() if stripped else ""
     if command.startswith("/"):
